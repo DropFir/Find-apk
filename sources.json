@@ -1,0 +1,51 @@
+{
+  "searchPolicy": {
+    "mode": "fast",
+    "perSourceTimeoutSeconds": 20,
+    "stopSearchAtSeconds": 120,
+    "perKeywordTimeoutSeconds": 150,
+    "onCloudflareChallenge": "externalSiteQuery",
+    "automaticBrowserFallback": false,
+    "batchIndependentQueries": true,
+    "stopAfterFirstCurrentPackage": true,
+    "oldVersionAction": "writeDownloadNoteAndStop"
+  },
+  "preferredSources": [
+    {
+      "name": "APKPure",
+      "baseUrl": "https://apkpure.com",
+      "searchUrlTemplate": "https://apkpure.com/search?q={query}",
+      "homepageRequired": false,
+      "enabled": true
+    },
+    {
+      "name": "APKPac Canada",
+      "baseUrl": "https://ca.apkpac.com",
+      "searchUrlTemplate": "https://ca.apkpac.com/search?q={query}",
+      "homepageRequired": false,
+      "enabled": true
+    },
+    {
+      "name": "APKCombo",
+      "baseUrl": "https://apkcombo.com",
+      "searchUrlTemplate": "https://apkcombo.com/search?q={query}",
+      "homepageRequired": false,
+      "enabled": true
+    },
+    {
+      "name": "CNET Download",
+      "baseUrl": "https://download.cnet.com",
+      "searchMode": "externalSiteQuery",
+      "homepageRequired": false,
+      "enabled": true
+    }
+  ],
+  "fallbackSearch": {
+    "enabled": true,
+    "onlyAfterPreferredSourcesExhausted": true,
+    "providers": [
+      "Google",
+      "Bing"
+    ]
+  }
+}

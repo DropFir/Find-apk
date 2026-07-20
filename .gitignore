@@ -1,0 +1,16 @@
+# Local APK search results and downloaded resources.
+# Repository-relative patterns work in Git on Windows and macOS.
+/downloads/
+
+# Legacy path retained so older local results remain untracked.
+/app-evidence/
+
+# Local Python environments and caches.
+__pycache__/
+*.py[cod]
+/.venv/
+/venv/
+
+# Operating-system metadata.
+.DS_Store
+Thumbs.db
