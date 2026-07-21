@@ -54,6 +54,56 @@ class RetryHandler(BaseHTTPRequestHandler):
 
 
 class DownloadFileTests(unittest.TestCase):
+    def test_preserves_partial_and_resumes_on_next_command(self) -> None:
+        RetryHandler.request_count = 0
+        RetryHandler.resumed_from = None
+        server = ThreadingHTTPServer(("127.0.0.1", 0), RetryHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "sample.apk"
+                command = [
+                    sys.executable,
+                    str(TOOLS_DIR / "download_file.py"),
+                    f"http://127.0.0.1:{server.server_port}/sample.apk",
+                    str(output),
+                    "--timeout",
+                    "5",
+                    "--retries",
+                    "0",
+                ]
+
+                first = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                partial = output.parent / f".{output.name}.part"
+                metadata = output.parent / f".{output.name}.part.url"
+                self.assertEqual(first.returncode, 1)
+                self.assertEqual(partial.stat().st_size, 32)
+                self.assertTrue(metadata.exists())
+
+                second = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                self.assertEqual(second.returncode, 0, second.stderr)
+                self.assertEqual(output.read_bytes(), RetryHandler.payload)
+                self.assertEqual(RetryHandler.resumed_from, 32)
+                self.assertFalse(partial.exists())
+                self.assertFalse(metadata.exists())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
     def test_retries_truncated_response_with_curl(self) -> None:
         RetryHandler.request_count = 0
         RetryHandler.resumed_from = None

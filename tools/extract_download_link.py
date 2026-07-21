@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from html.parser import HTMLParser
+import re
 import shutil
 import socket
 import subprocess
@@ -15,20 +16,9 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
+from http_headers import BROWSER_NAVIGATION_HEADERS
 
-BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": (
-        "text/html,application/xhtml+xml,application/xml;q=0.9,"
-        "image/avif,image/webp,*/*;q=0.8"
-    ),
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    "Upgrade-Insecure-Requests": "1",
-}
+BROWSER_HEADERS = BROWSER_NAVIGATION_HEADERS
 MAX_HTML_BYTES = 2 * 1024 * 1024
 CHALLENGE_MARKERS = (
     "cf-browser-verification",
@@ -69,6 +59,27 @@ class Analysis:
     classification: str
     links: list[str]
     visible_captcha: bool
+    detected_version: str | None = None
+
+
+VERSION_POLICIES = ("prefer-latest", "exact")
+VERSION_PATTERNS = (
+    re.compile(r'"versionName"\s*:\s*"([^"\\]+)"', re.IGNORECASE),
+    re.compile(r'"version"\s*:\s*"([^"\\]+)"', re.IGNORECASE),
+    re.compile(
+        r"(?:latest\s+version|version|版本)\s*[:：]?\s*v?([0-9][0-9A-Za-z._+-]*)",
+        re.IGNORECASE,
+    ),
+)
+
+
+def detect_page_version(body: str) -> str | None:
+    """Return the page's primary advertised version when it is explicit."""
+    for pattern in VERSION_PATTERNS:
+        match = pattern.search(body)
+        if match:
+            return match.group(1).strip()
+    return None
 
 
 class DownloadPageParser(HTMLParser):
@@ -122,8 +133,12 @@ def analyze_html(
     status: int = 200,
     expected_package: str | None = None,
     expected_version: str | None = None,
+    version_policy: str = "prefer-latest",
 ) -> Analysis:
+    if version_policy not in VERSION_POLICIES:
+        raise ValueError(f"unsupported version policy: {version_policy}")
     lowered = body.lower()
+    detected_version = detect_page_version(body)
     parsed_page_url = urlparse(page_url)
     hostname = (parsed_page_url.hostname or "").lower()
     is_apkpure_exact_page = (
@@ -157,17 +172,25 @@ def analyze_html(
         return Analysis("http_error", [], False)
 
     if expected_package and expected_package.lower() not in lowered:
-        return Analysis("package_mismatch", [], False)
-    if expected_version and expected_version.lower() not in lowered:
-        return Analysis("version_mismatch", [], False)
+        return Analysis("package_mismatch", [], False, detected_version)
+    if expected_version and version_policy == "exact":
+        version_matches = (
+            detected_version.casefold() == expected_version.casefold()
+            if detected_version is not None
+            else expected_version.casefold() in lowered
+        )
+        if not version_matches:
+            return Analysis("version_mismatch", [], False, detected_version)
 
     parser = DownloadPageParser()
     parser.feed(body)
     links = list(dict.fromkeys(urljoin(page_url, link) for link in parser.links))
     if links:
-        return Analysis("download_link", links, parser.visible_captcha)
+        return Analysis(
+            "download_link", links, parser.visible_captcha, detected_version
+        )
     if parser.visible_captcha:
-        return Analysis("captcha_required", [], True)
+        return Analysis("captcha_required", [], True, detected_version)
     if (
         (hostname == "apkcombo.com" or hostname.endswith(".apkcombo.com"))
         and all(marker in lowered for marker in APKCOMBO_BROWSER_REQUIRED_MARKERS)
@@ -176,16 +199,16 @@ def analyze_html(
         # HTTP clients while a real browser session receives the signed
         # ``variant`` anchor.  Calling this "no_download_link" is a false
         # negative and prevents the required browser fallback.
-        return Analysis("browser_required", [], False)
+        return Analysis("browser_required", [], False, detected_version)
     if is_uptodown_exact_page:
-        return Analysis("browser_required", [], False)
+        return Analysis("browser_required", [], False, detected_version)
     if is_apkpure_exact_page:
         # APKPure detail pages often expose only a browser-rendered
         # "Download APK/XAPK" transition to the package's /download page.
         # The absence of a file-host anchor on the detail page is therefore
         # not evidence that the package has no public download.
-        return Analysis("browser_required", [], False)
-    return Analysis("no_download_link", [], False)
+        return Analysis("browser_required", [], False, detected_version)
+    return Analysis("no_download_link", [], False, detected_version)
 
 
 def fetch_with_urllib(url: str, timeout: float) -> PageResult:
@@ -279,7 +302,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("url", help="Exact public download page URL")
     parser.add_argument("--package-name", help="Expected Android package name")
-    parser.add_argument("--version", help="Expected version string")
+    parser.add_argument("--version", help="Reference or explicitly requested version")
+    parser.add_argument(
+        "--version-policy",
+        choices=VERSION_POLICIES,
+        default="prefer-latest",
+        help="Prefer any available version by default; use exact only for a user-requested version",
+    )
     parser.add_argument("--timeout", type=float, default=20.0)
     return parser.parse_args()
 
@@ -296,6 +325,7 @@ def main() -> int:
             status=page.status,
             expected_package=args.package_name,
             expected_version=args.version,
+            version_policy=args.version_policy,
         )
     except (URLError, socket.timeout, TimeoutError, ConnectionError, OSError, ValueError) as error:
         print("classification=network_error")
@@ -306,6 +336,8 @@ def main() -> int:
     print(f"status={page.status}")
     print(f"page_url={page.final_url}")
     print(f"visible_captcha={str(analysis.visible_captcha).lower()}")
+    if analysis.detected_version is not None:
+        print(f"detected_version={analysis.detected_version}")
     print(f"candidate_count={len(analysis.links)}")
     if analysis.links:
         print(f"download_url={analysis.links[0]}")

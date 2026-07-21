@@ -11,25 +11,23 @@ import socket
 import subprocess
 import sys
 import time
-import uuid
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from http_headers import BROWSER_NAVIGATION_HEADERS
 
 BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": BROWSER_NAVIGATION_HEADERS["User-Agent"],
     "Accept": "*/*",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Language": BROWSER_NAVIGATION_HEADERS["Accept-Language"],
 }
 PACKAGE_SUFFIXES = {".apk", ".xapk", ".apkm", ".apks"}
 ZIP_SIGNATURES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 CHUNK_SIZE = 1024 * 1024
 INSPECT_SIZE = 512
+LARGE_PACKAGE_BYTES = 50 * 1024 * 1024
+LARGE_PACKAGE_TIMEOUT = 60.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -94,18 +92,34 @@ def set_read_timeout(response: object, timeout: float) -> None:
             return
 
 
-def download_once(url: str, temporary: Path, timeout: float) -> tuple[str, str, int]:
-    deadline = time.monotonic() + timeout
+def effective_download_timeout(
+    requested: float, suffix: str, expected_length: int | None = None
+) -> float:
+    if suffix in PACKAGE_SUFFIXES and (
+        expected_length is None or expected_length >= LARGE_PACKAGE_BYTES
+    ):
+        return max(requested, LARGE_PACKAGE_TIMEOUT)
+    return requested
+
+
+def download_once(
+    url: str, temporary: Path, timeout: float, suffix: str
+) -> tuple[str, str, int]:
+    started = time.monotonic()
     request = Request(url, headers=BROWSER_HEADERS, method="GET")
     with urlopen(request, timeout=timeout) as response, temporary.open("wb") as output:
         content_type = response.headers.get("Content-Type", "")
         content_length = response.headers.get("Content-Length", "")
         expected_length = int(content_length) if content_length.isdigit() else None
+        transfer_timeout = effective_download_timeout(timeout, suffix, expected_length)
+        deadline = started + transfer_timeout
         total = 0
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError(f"download exceeded {timeout:g} seconds")
+                raise TimeoutError(
+                    f"download exceeded {transfer_timeout:g} seconds"
+                )
             set_read_timeout(response, remaining)
             chunk = response.read(CHUNK_SIZE)
             if not chunk:
@@ -185,8 +199,31 @@ def should_retry(error: BaseException) -> bool:
         return error.code == 429 or error.code >= 500
     return isinstance(
         error,
-        (URLError, HTTPException, socket.timeout, TimeoutError, ConnectionError),
+        (
+            URLError,
+            HTTPException,
+            socket.timeout,
+            TimeoutError,
+            ConnectionError,
+            subprocess.TimeoutExpired,
+        ),
     )
+
+
+def prepare_partial(output: Path, url: str) -> tuple[Path, Path]:
+    """Reuse a partial only when it belongs to the same requested URL."""
+    temporary = output.parent / f".{output.name}.part"
+    metadata = output.parent / f".{output.name}.part.url"
+    recorded_url = ""
+    if metadata.exists():
+        recorded_url = metadata.read_text(encoding="utf-8", errors="replace").strip()
+    if temporary.exists() and temporary.stat().st_size > 0 and recorded_url == url:
+        return temporary, metadata
+    temporary.unlink(missing_ok=True)
+    metadata.unlink(missing_ok=True)
+    with metadata.open("w", encoding="utf-8", newline="\n") as record:
+        record.write(f"{url}\n")
+    return temporary, metadata
 
 
 def main() -> int:
@@ -196,23 +233,31 @@ def main() -> int:
 
     output = args.output.expanduser().resolve(strict=False)
     output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.parent / f".{output.name}.{uuid.uuid4().hex}.part"
+    temporary, partial_metadata = prepare_partial(output, args.url)
     attempts = args.retries + 1
+    preserve_partial = False
 
     try:
-        temporary.unlink(missing_ok=True)
         for attempt in range(1, attempts + 1):
             try:
-                if attempt > 1 and shutil.which("curl") is not None:
+                resume_available = temporary.exists() and temporary.stat().st_size > 0
+                if (attempt > 1 or resume_available) and shutil.which("curl") is not None:
+                    curl_timeout = effective_download_timeout(
+                        args.timeout, output.suffix.lower()
+                    )
                     final_url, content_type, total = download_with_curl(
-                        args.url, temporary, args.timeout
+                        args.url, temporary, curl_timeout
                     )
                 else:
                     final_url, content_type, total = download_once(
-                        args.url, temporary, args.timeout
+                        args.url,
+                        temporary,
+                        args.timeout,
+                        output.suffix.lower(),
                     )
                 validate_download(temporary, output.suffix.lower(), content_type)
                 os.replace(temporary, output)
+                partial_metadata.unlink(missing_ok=True)
                 print(f"output={output.as_posix()}")
                 print(f"bytes={total}")
                 print(f"content_type={content_type}")
@@ -229,12 +274,26 @@ def main() -> int:
                 OSError,
                 ValueError,
             ) as error:
-                if attempt >= attempts or not should_retry(error):
+                retriable = should_retry(error)
+                if attempt >= attempts or not retriable:
+                    preserve_partial = bool(
+                        retriable
+                        and temporary.exists()
+                        and temporary.stat().st_size > 0
+                    )
                     print(f"Download failed: {error}", file=sys.stderr)
+                    if preserve_partial:
+                        print(f"partial={temporary.as_posix()}", file=sys.stderr)
+                        print(
+                            f"partial_bytes={temporary.stat().st_size}",
+                            file=sys.stderr,
+                        )
                     return 1
         return 1
     finally:
-        temporary.unlink(missing_ok=True)
+        if not preserve_partial:
+            temporary.unlink(missing_ok=True)
+            partial_metadata.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

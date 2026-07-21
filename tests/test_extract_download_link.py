@@ -122,6 +122,52 @@ class AnalyzeHtmlTests(unittest.TestCase):
         self.assertEqual(result.classification, "browser_required")
         self.assertEqual(result.links, [])
 
+    def test_newer_page_version_is_accepted_by_default(self) -> None:
+        html = """
+        <script>window.app = {"versionName":"13.22"};</script>
+        <p>com.pinger.textfree.call</p>
+        <button>Download APK</button>
+        """
+        result = analyze_html(
+            html,
+            "https://apkpure.com/text-free/com.pinger.textfree.call",
+            expected_package="com.pinger.textfree.call",
+            expected_version="13.21",
+        )
+        self.assertEqual(result.classification, "browser_required")
+        self.assertEqual(result.detected_version, "13.22")
+
+    def test_older_page_version_is_accepted_when_latest_is_unavailable(self) -> None:
+        html = """
+        <script>window.app = {"versionName":"13.13.1"};</script>
+        <p>com.pinger.textfree.call</p>
+        <a class="variant" href="/r2?u=older-package">Download</a>
+        """
+        result = analyze_html(
+            html,
+            "https://apkcombo.com/text-free/com.pinger.textfree.call/download/apk",
+            expected_package="com.pinger.textfree.call",
+            expected_version="13.21",
+        )
+        self.assertEqual(result.classification, "download_link")
+        self.assertEqual(result.detected_version, "13.13.1")
+
+    def test_explicit_version_remains_strict(self) -> None:
+        html = """
+        <script>window.app = {"versionName":"13.22"};</script>
+        <p>com.pinger.textfree.call</p>
+        <a class="variant" href="/r2?u=newer-package">Download</a>
+        """
+        result = analyze_html(
+            html,
+            "https://apkcombo.com/text-free/com.pinger.textfree.call/download/apk",
+            expected_package="com.pinger.textfree.call",
+            expected_version="13.21",
+            version_policy="exact",
+        )
+        self.assertEqual(result.classification, "version_mismatch")
+        self.assertEqual(result.detected_version, "13.22")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,10 @@
     "perKeywordTimeoutSeconds": 150,
     "directDownloadTimeoutSeconds": 20,
     "directDownloadRetries": 1,
+    "largePackageThresholdBytes": 52428800,
+    "largePackageTimeoutSeconds": 60,
+    "persistPartialAcrossCommands": true,
+    "resumePersistedPartialOnceBeforeBrowser": true,
     "extractDownloadLinkBeforeDeclaringBlocked": true,
     "exactPagePipelineTool": "tools/download_from_page.py",
     "exactPagePipelineRequired": true,
@@ -25,6 +29,8 @@
     "buildConfiguredSourceSearchesFirst": true,
     "requireAllEnabledSourcesQueriedBeforeNoResult": true,
     "sourceStatusVocabulary": [
+      "unchecked",
+      "partially_queried",
       "queried",
       "candidate_found",
       "exact_page_verified",
@@ -34,11 +40,53 @@
     "preferredSourceCandidateMustBeVerifiedFirst": true,
     "separateKeywordAndPackageQueriesRequired": true,
     "combinedKeywordPackageQueryDoesNotCount": true,
+    "webToolOpenFailureIsNotSourceFailure": true,
+    "probeSearchUrlAfterToolOpenFailure": true,
+    "genericSearchRedirectCannotCountAsCompletedQuery": true,
+    "externalSearchTimeoutCannotSupportNoCandidate": true,
+    "retryFailedBatchAsSeparateQueriesOnce": true,
+    "searchCandidateTool": "tools/extract_search_candidates.py",
+    "searchCandidateToolRequiredForSearchUrls": true,
+    "probeOkDoesNotCompleteSearch": true,
+    "candidateFoundMustBeVerifiedBeforeBrowserOrNextSource": true,
+    "downloadNoteForbiddenWhileCandidateUnverified": true,
     "onCloudflareChallenge": "externalQueryThenRealChromeThenCloudflareFaker",
     "automaticBrowserFallback": true,
     "batchIndependentQueries": true,
     "stopAfterFirstCurrentPackage": true,
-    "oldVersionAction": "writeDownloadNoteAndStop"
+    "oldVersionAction": "downloadHighestTrustedAvailableVersion"
+  },
+  "searchPagePolicy": {
+    "tool": "tools/extract_search_candidates.py",
+    "requireExactPackageMatch": true,
+    "candidateFoundAction": "verifyExactPageImmediately",
+    "genericSearchRedirectAction": "runExternalFallback",
+    "networkErrorStatus": "unchecked",
+    "probeOkRequiresCandidateExtraction": true,
+    "browserSearchForbiddenAfterProbeOk": true
+  },
+  "identitySelectionPolicy": {
+    "askUserOnAmbiguousKeyword": false,
+    "continueWithoutClarification": true,
+    "reusePreviouslyVerifiedIdentityForSameKeyword": true,
+    "ranking": [
+      "user_supplied_identity",
+      "previously_verified_same_keyword_identity",
+      "google_play_and_official_site_match",
+      "exact_title_active_listing_recent_update",
+      "strongest_complete_official_evidence"
+    ],
+    "reportAutomaticChoiceInFinal": true
+  },
+  "versionSelectionPolicy": {
+    "defaultMode": "prefer-latest",
+    "identityLookupVersionIsReferenceOnly": true,
+    "acceptNewerThanReference": true,
+    "acceptOlderWhenLatestUnavailable": true,
+    "selectHighestDownloadableStableVersion": true,
+    "strictOnlyWhenUserSpecifiesVersion": true,
+    "strictToolArgument": "--version-policy exact",
+    "reportAndNameUsingDetectedVersion": true
   },
   "downloadPagePolicy": {
     "signedLinkPrefixes": [
@@ -46,7 +94,15 @@
       "/d?u="
     ],
     "downloadSignedLinksImmediately": true,
-    "manualEntryMustUseBlockedPage": true
+    "manualEntryMustUseBlockedPage": true,
+    "apkpureDetailToDownloadTransition": "automatic",
+    "apkpureTransitionTool": "tools/download_from_page.py",
+    "browserOnlyAfterApkpureDownloadPageFails": true,
+    "browserMustOpenApkpureDownloadPage": true,
+    "apkmirrorVariantToFileTransition": "automatic",
+    "apkmirrorTransitionTool": "tools/download_from_page.py",
+    "sharedNavigationHeaders": "tools/http_headers.py",
+    "networkTimeoutRequiresActualTimeoutEvidence": true
   },
   "cloudflareFallback": {
     "enabled": true,
@@ -107,6 +163,13 @@
       "name": "APKCombo",
       "baseUrl": "https://apkcombo.com",
       "searchUrlTemplate": "https://apkcombo.com/search?q={query}",
+      "homepageRequired": false,
+      "enabled": true
+    },
+    {
+      "name": "APKMirror",
+      "baseUrl": "https://www.apkmirror.com",
+      "searchMode": "externalSiteQuery",
       "homepageRequired": false,
       "enabled": true
     },

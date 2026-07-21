@@ -1,6 +1,6 @@
 # Find-APK Agent
 
-根据用户提供的关键词，快速找到 Android 安装包、应用图标、开发者和来源。默认寻找最新稳定版；用户指定版本、地区或安装包格式时，以用户要求为准。
+根据用户提供的关键词，快速找到 Android 安装包、应用图标、开发者和来源。默认优先寻找最新稳定版；最新版不可下载时，选择同一应用中版本最高的可信旧版。用户明确指定版本、地区或安装包格式时，以用户要求为准。
 
 ## 核心交付
 
@@ -27,13 +27,14 @@
 
 ## 最小工具需求
 
-本 Agent 只需要六类通用能力：
+本 Agent 只需要八类通用能力：
 
 - 网页搜索或浏览器：搜索指定网站、官方页面和公开来源。
 - 来源搜索计划：确认包名后，优先调用仓库内的 `tools/build_source_searches.py`，一次列出 `sources.json` 中所有启用来源的关键词和包名搜索入口，避免遗漏来源。
-- 下载页解析与下载：取得精确下载页后，必须调用仓库内的 `tools/download_from_page.py`，在同一命令中提取并立即下载当前 APK/XAPK/APKM/APKS。`tools/extract_download_link.py` 只用于不保存文件的诊断，二者都会区分真实验证码与页面中未触发的验证码代码。
-- HTTP 文件下载：取得公开直链后，优先调用仓库内的 `tools/download_file.py`。它只重试一次、原子写入，并拒绝伪装成安装包的 HTML 页面。
-- 受阻页面探测：优先调用仓库内的 `tools/probe_url.py`，用完整浏览器导航请求头区分 Cloudflare、资源删除和站点故障。
+- 搜索候选解析：对计划中每个 `search_url` 主目标必须调用仓库内的 `tools/extract_search_candidates.py`，完整读取搜索页并提取包名完全匹配的精确候选。不得只看页面标题、搜索摘要或 `probe_url.py` 的 `ok` 就结束搜索。
+- 下载页解析与下载：取得精确详情页或下载页后，必须调用仓库内的 `tools/download_from_page.py`，在同一命令中提取并立即下载当前 APK/XAPK/APKM/APKS。APKPure 详情页缺少文件链接时，工具会自动进入同路径的 `/download` 页；APKMirror 精确变体页会自动进入带 `key` 的中间下载页并解析 `download.php` 文件入口。两者都不允许 Agent 手工跳过或改由网页搜索判断。`tools/extract_download_link.py` 只用于不保存文件的诊断，二者都会区分真实验证码与页面中未触发的验证码代码。
+- HTTP 文件下载：取得公开直链后，优先调用仓库内的 `tools/download_file.py`。它只重试一次、原子写入，并拒绝伪装成安装包的 HTML 页面。安装包达到 50 MiB 时会自动把传输预算提升到 60 秒；网络/TLS 失败会保留与目标文件绑定的隐藏分片，下一次相同 URL 可继续续传。
+- 受阻页面探测：优先调用仓库内的 `tools/probe_url.py`，用完整浏览器导航请求头区分 Cloudflare、资源删除、站点故障和网页工具自身的打开失败。网页搜索/打开工具报“无法打开”、安全 URL 错误、后端网络错误或空响应时，必须用它复核原始搜索 URL；工具错误不等于源站无结果。
 - Cloudflare 后备：公开搜索页、应用详情页或下载页确认出现 Cloudflare 挑战时，优先复用用户当前的真实 Chrome 会话；无法通过时再使用 `onlyGuo/Cloudflare-Faker`。不得仅因 Cloudflare 直接放弃该来源。
 - WEBP 图像处理：优先调用仓库内的 `tools/convert_icon.py`。它使用 Pillow 原尺寸、无损转换并验证输出。
 
@@ -53,7 +54,16 @@
 
 用户至少提供一个应用关键词，例如应用名称、开发者名称或包名。还可以指定版本、地区或首选格式。
 
-如果关键词可能对应多个应用，先列出候选应用的名称、开发者和包名，请用户确认。不要凭名称猜测并下载错误应用。
+用户没有明确指定版本时，官方身份查询得到的版本号只作为“参考版本”，不得作为精确匹配条件。镜像页出现比参考版本更新或稍旧的版本都要继续验证；优先选择实际可下载版本中最高的稳定版。只有用户明确写出版本要求时才启用严格版本匹配。
+
+如果关键词对应多个相近应用，Agent 必须自行完成身份消歧，不得暂停任务询问用户。选择顺序固定为：
+
+1. 用户已明确提供的包名、开发者、版本或精确页面。
+2. 当前任务或同一对话中已经通过 Google Play/开发者官网确认过的同关键词包名；旧的下载失败状态不能复用，但已核验的应用身份可以复用，除非当前官方证据显示应用已更换。
+3. Google Play 精确标题、开发者名称和其“应用支持”官网能够相互对应的候选。
+4. 与用户原始关键词完整标题最接近、仍在官方商店上架且更新时间较新的候选。
+
+如果前四项仍不能唯一确定，继续核对所有候选的官方页面并选择证据最完整者；在最终回复中用一句话注明自动选择依据，但仍不得向用户提问。不得只凭名称猜测，也不得因为存在多个候选就停止搜索或创建 `download-note.txt`。
 
 ## 官方来源发现
 
@@ -87,25 +97,43 @@ site:<developer-domain> "<keyword>" download app
 
 输出每行依次为来源、查询类型、查询方式、主目标和备用外部查询。主目标为搜索 URL 时必须先访问主目标；只有主目标受阻或不可用时才执行同一行的备用查询。关键词行与包名行必须分别执行，不得把二者合并成同时包含两个引号条件的更严格查询，也不得用近似查询代替后声称已经完成该行。
 
+对每个 `search_url` 主目标使用以下命令。它会以完整导航请求头读取页面、检查通用搜索重定向，并只返回包名完全匹配的候选链接：
+
+```bash
+<python> <agent-root>/tools/extract_search_candidates.py "<search-url>" --package-name "<package.name>" --timeout 20
+```
+
+`classification=candidate_found` 时必须立即打开输出的 `candidate_url` 并进入精确页验证/下载流程；在该候选验证完成前禁止启动 Chrome 搜索其他来源、创建 `download-note.txt` 或宣布未找到。
+
 1. `searchMode` 为 `externalSiteQuery` 时，直接使用 `site:<base-domain> "<keyword>" APK`，不要打开首页或声称使用了站内搜索。
 2. 来源包含 `searchUrlTemplate` 时，先对关键词进行 URL 编码，再替换模板中的 `{query}` 并直接访问搜索入口。
 3. `homepageRequired` 为 `false` 时，不要为了测试站点而打开 `baseUrl`。`baseUrl` 只用于确认来源域名、解析相对链接和构造 `site:` 查询。
 4. 没有 `searchUrlTemplate` 且未指定 `externalSiteQuery` 时，先使用网站自身的搜索功能；不可用时，使用限定域名的搜索查询。
 5. 使用用户关键词搜索；找到应用名称或包名后，可继续用它们定位精确详情页和下载页。
-6. 搜索入口受阻时，立即使用外部 `site:<domain>` 搜索。不要为搜索页调用可见浏览器，也不要因为首页失败而跳过整个来源。
-7. 找不到应用、版本不符、链接失效或页面信息明显不匹配时，继续下一个指定网站。
+6. 网页搜索/打开工具对搜索入口报“无法打开”、安全 URL 错误、后端网络错误或空响应时，这只是 `tool_transport_error`，不能据此写源站 `403`、Cloudflare、无候选或无直链。必须立即对同一搜索 URL 运行 `probe_url.py`；同时可执行备用 `site:<domain>` 查询。`probe_url.py` 返回 `ok` 时，必须继续运行 `extract_search_candidates.py`，不得停留在标题检查、改用 Chrome 或因为外部搜索后端超时而跳过源站页面。只有候选解析工具或探测确认源站受阻/不可用时，才按相应状态分流。不要仅为普通搜索页启动可见浏览器，也不要因为首页失败而跳过整个来源。
+7. 找不到应用、包名不符、链接失效或页面信息明显不匹配时，继续下一个指定网站。用户未指定版本时，版本高于或低于身份查询中的参考版本都不算“不匹配”；应记录页面实际版本并继续下载或比较其他候选。
 8. 只有全部启用网站都没有结果时，才按 `fallbackSearch` 配置使用公开搜索。
 9. 用户要求“仅搜索指定网站”时，不得回退到其他网站。
-10. 每个来源在当前会话中只使用以下四种明确状态，不创建额外文件：
-    - `已查询`：已提交该来源的搜索入口或限定域名查询，但尚未找到精确候选页。
+10. 每个来源在当前会话中只使用以下六种明确状态，不创建额外文件：
+    - `未检查`：搜索请求未提交，或全部请求都因工具错误、超时、中断而没有取得可读的完整响应。
+    - `已执行部分查询`：关键词与包名两条独立查询中只有一条取得可读的完整响应；仅提交请求但没有响应不能升级为此状态。
+    - `已查询`：关键词与包名两条独立查询均取得可读的完整响应，且尚未找到精确候选页。
     - `已找到候选`：搜索结果包含可能匹配的应用页，但尚未验证包名和版本。
     - `已验证精确页`：已打开详情页或下载页，并核对包名与版本。
     - `已尝试下载`：已把公开文件直链交给下载工具。
 11. 回答“是否搜索过某来源”时，必须先检查当前对话中的实际工具记录，并用上述状态回答。提交过 `site:` 查询不能说成“完全没搜索”；只提交过查询也不能说成“访问过精确页面”。对话历史无法读取时明确说“现有记录无法确认”，不得根据下载说明倒推。
-12. APKPure 是当前最高优先级镜像。它的搜索结果出现匹配候选时，必须先打开并验证其精确页；只有精确页受阻、失效、不匹配或无当前版本时，才选择下一个镜像的候选。搜索结果没有候选时记录为 `已查询` 即可，不得编造精确页访问。
-13. 只有关键词与包名两条独立查询均完成后，才能对该来源写“无匹配候选”。如果只执行了其中一条，必须写“已执行部分查询，暂未发现候选”，并在时限内补完另一条。诸如 `"<keyword>" "<package.name>"` 的合并查询不等价于两条独立查询。
-14. 批量请求只允许用于发现候选 URL，不允许用于判断精确下载页是否含直链。批量命令超时或中断后，未完成的结果只能标记为“未检查”，不得使用部分 HTML、临时正则或猜测写成“无直链”。
+12. APKPure 是当前最高优先级镜像。它的搜索结果出现匹配候选时，必须先打开并验证其精确页；只有精确页受阻、失效、包名不匹配或没有可下载文件时，才选择下一个镜像的候选。APKPure 页面版本比预查版本更新时必须采用页面实际版本，不能写成“版本不匹配”或“版本较旧”。搜索结果没有候选时记录为 `已查询` 即可，不得编造精确页访问。
+13. 只有关键词与包名两条独立查询均取得可读的完整响应后，才能对该来源写“无匹配候选”。如果只完成其中一条，必须写“已执行部分查询，暂未发现候选”，并在时限内补完另一条。诸如 `"<keyword>" "<package.name>"` 的合并查询不等价于两条独立查询。请求已提交但返回工具错误、超时或中断不算完成。
+14. 批量请求只允许用于发现候选 URL，不允许用于判断精确下载页是否含直链。批量命令超时或中断后，没有独立结果的查询只能标记为“未检查”，不得使用部分 HTML、临时正则或猜测写成“无候选”或“无直链”。批量搜索后端在返回任何独立结果前整体失败时，允许在剩余时限内把关键词和包名查询各自单独重发一次；这不算重复提交同一批次。
 15. 用户提供了精确详情页或下载页时，该 URL 是最高优先级候选，必须先使用 `download_from_page.py` 实际解析和下载，再继续普通搜索。旧的 `download-note.txt` 或历史失败结论不得覆盖当前精确 URL。
+16. APKPure 搜索页需要额外检查最终 URL 和页面标题。关键词搜索返回 `200` 且页面包含包名匹配的详情页时，必须立即标记为 `已找到候选` 并打开该精确页。包名搜索若被重定向到不含 `q` 参数的通用 `/search` 页面，或页面标题只是通用搜索首页，只能视为该条站内查询不可用，不能视为“无匹配候选”；应保留关键词查询已发现的候选，并对包名执行备用外部查询。
+17. `extract_search_candidates.py` 的结果按以下方式处理：
+    - `candidate_found`：至少一个精确包名候选；立即进入最高优先级候选，禁止跳到 Chrome 或其他来源。
+    - `no_candidates`：只有完整响应成功解析后才表示该条查询无精确包名候选。
+    - `generic_search_redirect`：站点丢弃了查询参数；该条查询不可用，执行备用外部查询，不能写“无候选”。
+    - `cloudflare_challenge`：进入 Cloudflare 强制后备。
+    - `network_error`、`http_error`、超时或工具中断：状态保持 `未检查`，不能创建人工下载说明或宣布来源没有结果。
+18. `probe_url.py` 只负责确认 HTTP/Cloudflare 状态，不能提取候选。`classification=ok` 和匹配的 `<title>` 都不等于完成搜索；没有 `extract_search_candidates.py` 的 `candidate_found`/`no_candidates` 输出，不能把该站内查询记为已完成。
 
 ## Cloudflare 与下载阻塞重试
 
@@ -126,25 +154,36 @@ site:<developer-domain> "<keyword>" download app
    - `not_found`：检查 slug 和包名一次；仍为 `404` 就换来源。
    - `rate_limited`：遇到 `429` 立即停止该站点的连续重试，转到下一个来源。
    - `server_error` 或 `http_error`：只重试一次；仍失败就换来源。
-5. 详情页返回 `200` 不等于安装包可下载。取得精确的当前版本下载页后，必须运行一体化解析下载工具；包名、版本和目标扩展名必须明确，防止选错应用、旧版或错误格式：
+5. 详情页返回 `200` 不等于安装包可下载。取得精确下载页后，必须运行一体化解析下载工具；包名、参考版本和目标扩展名必须明确，防止选错应用或错误格式。默认 `--version-policy prefer-latest` 会接受比参考版本更新或稍旧的版本；只有用户明确指定版本时才追加 `--version-policy exact`：
 
 ```bash
 <python> <agent-root>/tools/download_from_page.py "<download-page-url>" "<output.xapk>" --package-name "<package.name>" --version "<version>" --page-timeout 20 --download-timeout 20 --retries 1
 ```
 
+用户明确指定版本时：
+
+```bash
+<python> <agent-root>/tools/download_from_page.py "<download-page-url>" "<output.xapk>" --package-name "<package.name>" --version "<requested-version>" --version-policy exact --page-timeout 20 --download-timeout 20 --retries 1
+```
+
 6. 根据一体化工具结果立即分流：
    - `download_link`：工具会在同一进程中把 `download_url` 交给 `tools/download_file.py`。APKCombo 的 `/r2?u=` 和 `/d?u=` 都是正常的临时签名跳转，不是验证码，也不要求 APKCombo Installer；不得另写临时正则重新解析。
    - `captcha_required`：只有解析器发现可见验证码容器、验证码 iframe 或明确的人机验证文字时才能使用此结论。
-   - `package_mismatch` 或 `version_mismatch`：不得下载；检查一次页面和参数后换来源。
-   - `browser_required`：APKCombo 直连请求只返回“Downloading / Sorry, something went wrong”动态占位页，Uptodown 精确公开页对非浏览器客户端返回 `404`/空下载按钮，或 APKPure 详情页只在浏览器中渲染“Download APK/XAPK”中间入口时，必须由 Agent 自动打开同一精确页。APKCombo 在真实 Chrome DOM 中核对包名、版本和唯一 `variant` 链接；Uptodown 核对应用详情中的版本和文件格式，进入 `/android/download` 后点击唯一下载按钮；APKPure 先打开实际 `/download` 页，再提取 `d.apkpure.*` 公开文件链接。三者都不得要求用户复制链接或手动点击。
+   - `package_mismatch`：不得下载；检查一次页面和参数后换来源。
+   - `version_mismatch`：只允许在用户明确指定版本且命令使用 `--version-policy exact` 时出现；不得下载错误版本。默认宽松模式出现此分类属于调用错误，必须改用 `prefer-latest` 重新执行。
+   - `detected_version`：页面实际版本。它高于参考版本时直接采用；低于参考版本但没有更高版本可下载时，允许作为可信回退版本。保存文件和最终回复必须使用该实际版本，不能沿用预查版本。
+   - `browser_required`：APKCombo 直连请求只返回“Downloading / Sorry, something went wrong”动态占位页，或 Uptodown 精确公开页对非浏览器客户端返回 `404`/空下载按钮时，必须由 Agent 自动打开同一精确页。APKCombo 在真实 Chrome DOM 中核对包名、版本和唯一 `variant` 链接；Uptodown 核对应用详情中的版本和文件格式，进入 `/android/download` 后点击唯一下载按钮。APKPure 详情页的 `browser_required` 由 `download_from_page.py` 自动转换为同路径 `/download` 页并重新解析；只有转换后的实际 `/download` 页仍返回 `browser_required` 时才允许启动 Chrome，而且必须打开该 `/download` 页，不得重开详情页。三者都不得要求用户复制链接或手动点击。
+   - 工具输出 `transition=apkpure_download_page` 时，表示已经自动完成 APKPure 详情页到 `/download` 页的转换；Agent 必须以转换后的最终分类继续，禁止把最初详情页的 `browser_required` 当作最终结果。
+   - 工具输出 `transition=apkmirror_download_page` 时，表示已经自动完成 APKMirror 精确变体页 → 带 `key` 的中间页 → `download.php` 文件入口解析；Agent 必须直接下载工具输出的 `download_url`，不得改用网页搜索、Chrome 或把 Cloudflare/工具传输错误写成“网络超时”。
    - `no_download_link`：页面完整返回且不属于动态占位页，仍没有可解析的安装包链接，换来源或写人工说明。
    - 其他网络/HTTP 分类：按本节已有规则处理。
    - 只有工具明确输出 `no_download_link` 且页面请求完整结束后，才允许写“精确页无公开直链”。没有工具输出、批量超时或部分响应都不支持该结论。
-   - `classification=download_link` 且 `pipeline_result=download_failed`：说明直链存在，只是 Python/curl 下载失败。必须在真实 Chrome 中打开同一精确页，点击解析器确认的唯一版本链接并使用浏览器原生下载；不得改写成“无直链”。
+   - `classification=download_link` 且 `pipeline_result=download_failed`：说明直链存在，只是 Python/curl 下载失败。若下载工具同时输出 `partial=` 和 `partial_bytes=`，且当前关键词尚未到 120 秒停止线，允许对同一公开直链再执行一次下载命令以续传该分片；这不是从零重复下载。续传仍失败或没有分片时，必须在真实 Chrome 中打开同一精确下载页，点击解析器确认的唯一版本链接并使用浏览器原生下载；不得改写成“无直链”。
    - Chrome 点击后若已进入最终文件 CDN，但出现 `ERR_CONNECTION_CLOSED`、TLS 中断或文件下载事件未触发，记录为 `cdn_connection_failed`，并立即转下一个已验证的可信来源。这不是 Cloudflare、验证码或“无下载链接”，也不得把浏览器接力交给用户。
    - `pipeline_result=saved`：验证目标文件已存在后立即停止该关键词，并删除过时的 `download-note.txt`。
+   - 已有 `extract_search_candidates.py` 输出的精确候选时，必须先对该候选执行本节流程；Chrome 打不开搜索页不能覆盖已解析出的候选，也不能成为写人工说明的理由。
 7. 页面源码仅出现 `recaptcha`、`grecaptcha`、`hcaptcha`、Turnstile 脚本、CSS 类名或隐藏 badge，不代表用户需要验证码。不得仅凭搜索摘要、源码字符串或页面加载了验证码库就写“要求验证码”。
-8. 取得公开文件直链后，用下列命令下载。一个直链最多重试一次；第一次 Python TLS/连接失败时工具会保留当前临时分片，在第二次尝试自动使用 IPv4 + HTTP/1.1 的系统 `curl` 续传，用于规避 macOS 下部分 APK CDN 主动断开 HTTP/2 连接或大文件超时的问题，仍保持 HTTPS。工具仍失败后立即换来源或写人工下载说明，不再手工连续重试同一 URL。
+8. 取得公开文件直链后，用下列命令下载。一个直链在单次命令内最多重试一次；第一次 Python TLS/连接失败时工具会保留当前分片，在第二次尝试自动使用 IPv4 + HTTP/1.1 的系统 `curl` 续传，用于规避 macOS 下部分 APK CDN 主动断开 HTTP/2 连接或大文件超时的问题，仍保持 HTTPS。50 MiB 及以上的安装包自动使用最多 60 秒传输预算，一体化工具也必须等待该完整预算，不能在父进程中提前终止。命令最终仍因可重试网络错误失败时，隐藏分片不会删除；只有工具明确输出 `partial=` 时才允许在 120 秒停止线前再调用一次相同 URL 继续续传，之后仍失败才换来源或使用浏览器后备。
 
 ```bash
 <python> <agent-root>/tools/download_file.py "https://example.com/file.apk" "<output.apk>" --timeout 20 --retries 1
@@ -155,6 +194,7 @@ site:<developer-domain> "<keyword>" download app
 9. 普通页面仍不自动启动可见浏览器；`cloudflare_challenge` 是例外，必须按下述真实 Chrome 优先流程尝试。项目所有者已明确授权该公开页面后备流程，无需在每个关键词上重复询问。
 10. 直接打开 `https://challenges.cloudflare.com/` 只能看到 Turnstile 介绍页，不能替目标站点取得通行 Cookie，因此不要把它当作预热步骤。
 11. 不使用验证码代答服务、住宅代理或通用自动点击工具。真实 Chrome 会话是首选后备，Cloudflare-Faker 是次选；二者只允许用于无需登录、无需付费且无需账户权限的公开 APK 搜索、详情和下载页面。
+12. `probe_url.py`、`extract_download_link.py`、`download_from_page.py` 和最终文件下载工具必须复用仓库内统一的 `tools/http_headers.py` 请求身份。不得出现探测使用一种 User-Agent 返回 `200`、完整解析换另一种 User-Agent 返回 `403` 后又误写成“网络超时”的情况。
 
 ### Cloudflare 强制后备
 
@@ -174,14 +214,14 @@ site:<developer-domain> "<keyword>" download app
 
 默认执行 `sources.json` 的 `searchPolicy.mode=fast`：
 
-1. 开始处理关键词时记录起始时间。普通来源操作最多使用 20 秒；确认 Cloudflare 后改用单独的 75 秒合计后备预算。整个关键词仍最多 150 秒。
+1. 开始处理关键词时记录起始时间。普通来源操作最多使用 20 秒；50 MiB 及以上安装包的实际文件传输最多使用 60 秒；确认 Cloudflare 后改用单独的 75 秒合计后备预算。整个关键词仍最多 150 秒。
 2. 官方身份查询应在一次批量搜索中完成；确认包名后，所有独立镜像查询也应在一次批量搜索中完成。
 3. 来源优先级只用于选择候选。不得为了保持数组顺序而逐站等待相同类型的搜索请求。
 4. 相同查询批次不得重复提交。已有搜索结果应直接复用；普通网络操作必须设置不超过 20 秒的超时。真实 Chrome 和 Cloudflare-Faker 分别执行本节明确的 45 秒上限，任何操作都不得无上限等待。
 5. 多关键词任务按阶段批量执行：先批量确认身份，再批量搜索镜像，再逐个解析候选和下载。除非用户明确要求看到逐项结果，否则不得把完整工作流按关键词串行执行。
 6. 多关键词总时限不得超过 `关键词数量 × 150 秒`；每完成一个关键词都要检查该关键词及整批耗时，不能把保存图标和最终汇总放到无上限的尾部阶段。
-7. 找到版本明确、包名匹配的当前稳定安装包后立即停止，不再查备用来源。
-8. 只找到旧版本时，不继续长时间追踪当前版本。记录已知旧版本和人工入口，创建 `download-note.txt` 后结束。
+7. 找到版本明确、包名匹配且可下载的最新稳定安装包后立即停止，不再查备用来源。若较高版本页面没有安装包，应继续下一个可信来源。
+8. 只找到旧版本时，不继续长时间追踪不可取得的当前版本；下载已验证候选中版本最高的可信旧版，并在回复中注明实际版本。只有旧版也无法自动下载时才创建 `download-note.txt`。
 9. 运行到 120 秒仍没有可下载文件时，必须停止搜索。剩余 30 秒只用于保存图标、`developer.txt`、`download-note.txt` 和回复。
 10. 到 150 秒必须结束当前关键词；Cloudflare 后备的合计 75 秒上限包含在内，不因浏览器、镜像报错或图标转换继续延长。
 11. Pillow 等固定依赖应在开始整批关键词前检查并安装一次，不得在单个关键词计时过程中重复准备环境。
@@ -189,9 +229,9 @@ site:<developer-domain> "<keyword>" download app
 ## 快速工作流程
 
 1. 开始计时；用一次批量查询确认应用名称、开发者、包名、开发者官网和 Google Play 页面。
-2. 确认包名后，先用 `tools/build_source_searches.py` 生成计划，再用一次批量查询搜索所有启用来源；按 `sources.json` 的优先级选择结果。结论前确认每个启用来源至少达到 `已查询` 状态。
+2. 确认包名后，先用 `tools/build_source_searches.py` 生成计划；计划中的 `search_url` 必须用 `tools/extract_search_candidates.py` 解析，`external_query` 才交给网页搜索工具。按 `sources.json` 的优先级选择结果；最高优先级出现 `candidate_found` 后立即验证该精确页。结论前确认每个启用来源至少达到 `已查询` 状态。
 3. 优先选择与用户设备兼容的单体 APK；没有单体 APK 时可选择 XAPK、APKM 或 APKS，并在回复中注明格式。
-4. 取得精确下载页后必须使用 `tools/download_from_page.py` 在同一命令中解析并下载，不要等整批搜索结束，也不要用自写 curl/正则替代。保存一个最佳候选安装包后立即停止搜索，不要为了凑数量重复下载多个相同版本。
+4. 取得精确下载页后必须使用 `tools/download_from_page.py` 在同一命令中解析并下载，不要等整批搜索结束，也不要用自写 curl/正则替代。用户未指定版本时使用默认 `prefer-latest`，比较页面实际版本并选择可下载候选中最高的稳定版；用户指定版本时使用 `--version-policy exact`。保存一个最佳候选安装包后立即停止搜索，不要为了凑数量重复下载多个相同版本。
 5. 获取官方或来源明确的最大尺寸图标，优先直接下载 WEBP。
 6. 把安装包和图标保存到本次关键词目录。
 7. 创建 UTF-8 编码的 `developer.txt`，内容仅为开发者名称和结尾换行，不添加标签、JSON 或其他字段。
@@ -219,6 +259,8 @@ site:<developer-domain> "<keyword>" download app
 - 找到正确应用页面，但直链接口报错、过期或拒绝访问。
 - 源站明确返回 `404` 或 `410`，且其他来源没有可用安装包。
 - 没有找到版本明确的可信安装包。
+
+创建前必须确认所有已输出 `candidate_found` 的精确候选均已进入 `download_from_page.py` 或明确的浏览器后备流程。只探测到搜索页 `ok`、搜索页 Chrome 打不开、网页搜索后端超时，均不满足创建条件。
 
 文件使用 UTF-8 和 LF 换行，最多四行：
 
