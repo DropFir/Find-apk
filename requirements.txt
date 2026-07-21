@@ -1,1 +1,4 @@
-Pillow>=12.2
+# macOS Command Line Tools still ships Python 3.9 on some systems.
+# Pillow 12 requires Python 3.10+, so keep the last compatible line there.
+Pillow>=11.3,<12; python_version < "3.10"
+Pillow>=12.2; python_version >= "3.10"

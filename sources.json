@@ -4,11 +4,89 @@
     "perSourceTimeoutSeconds": 20,
     "stopSearchAtSeconds": 120,
     "perKeywordTimeoutSeconds": 150,
-    "onCloudflareChallenge": "externalSiteQuery",
-    "automaticBrowserFallback": false,
+    "directDownloadTimeoutSeconds": 20,
+    "directDownloadRetries": 1,
+    "extractDownloadLinkBeforeDeclaringBlocked": true,
+    "exactPagePipelineTool": "tools/download_from_page.py",
+    "exactPagePipelineRequired": true,
+    "manualExactPageRegexForbidden": true,
+    "partialBatchResponseCannotSupportNoLink": true,
+    "userProvidedExactUrlPriority": true,
+    "realChromeFallbackAfterDirectDownloadFailure": true,
+    "browserRequiredSources": [
+      "APKPure",
+      "APKCombo",
+      "Uptodown"
+    ],
+    "downloadLinkFailureCannotBeReportedAsNoLink": true,
+    "visibleCaptchaEvidenceRequired": true,
+    "passiveCaptchaAssetsAreNotBlockers": true,
+    "multiKeywordBatchQueries": true,
+    "buildConfiguredSourceSearchesFirst": true,
+    "requireAllEnabledSourcesQueriedBeforeNoResult": true,
+    "sourceStatusVocabulary": [
+      "queried",
+      "candidate_found",
+      "exact_page_verified",
+      "download_attempted"
+    ],
+    "historyEvidenceRequiredForCoverageClaims": true,
+    "preferredSourceCandidateMustBeVerifiedFirst": true,
+    "separateKeywordAndPackageQueriesRequired": true,
+    "combinedKeywordPackageQueryDoesNotCount": true,
+    "onCloudflareChallenge": "externalQueryThenRealChromeThenCloudflareFaker",
+    "automaticBrowserFallback": true,
     "batchIndependentQueries": true,
     "stopAfterFirstCurrentPackage": true,
     "oldVersionAction": "writeDownloadNoteAndStop"
+  },
+  "downloadPagePolicy": {
+    "signedLinkPrefixes": [
+      "/r2?u=",
+      "/d?u="
+    ],
+    "downloadSignedLinksImmediately": true,
+    "manualEntryMustUseBlockedPage": true
+  },
+  "cloudflareFallback": {
+    "enabled": true,
+    "requiredForPublicPages": true,
+    "strategy": "realChromeThenCloudflareFakerThenNextSource",
+    "realChromeFirst": true,
+    "realChromeTimeoutSeconds": 45,
+    "reuseSameBrowserSession": true,
+    "exportBrowserCookies": false,
+    "repository": "https://github.com/onlyGuo/Cloudflare-Faker.git",
+    "pinnedCommit": "5b0f2a4759d7b84c36e37afbe5c2e6400706b6c6",
+    "localDirectory": "tools/vendor/Cloudflare-Faker",
+    "cloudflareFakerTimeoutSeconds": 45,
+    "totalFallbackTimeoutSeconds": 75,
+    "setupOutsideKeywordTimer": true,
+    "reuseDomainCookies": true,
+    "localhostOnly": true,
+    "allowedPageTypes": [
+      "public_search",
+      "public_app_detail",
+      "public_download"
+    ],
+    "forbiddenPageTypes": [
+      "login",
+      "payment",
+      "account",
+      "admin",
+      "permissioned"
+    ],
+    "failureStates": [
+      "chrome_unavailable",
+      "interactive_challenge_pending",
+      "faker_prerequisite_missing",
+      "challenge_timeout",
+      "page_still_blocked",
+      "browser_required",
+      "cdn_connection_failed",
+      "no_download_link",
+      "download_failed"
+    ]
   },
   "preferredSources": [
     {

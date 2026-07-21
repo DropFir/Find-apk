@@ -12,44 +12,109 @@
 
 本 Agent 不执行签名取证、安全扫描、安装测试或逆向分析，也不生成报告和校验清单。
 
-运行时只需要网页搜索、HTTP 下载和 Python。在 `Find-apk` 目录中安装图标转换依赖：
+运行时只需要网页搜索、HTTP 下载和 Python。
+
+## macOS 快速准备
+
+在仓库根目录运行一次：
 
 ```bash
-python -m pip install -r requirements.txt
+sh tools/setup_macos.sh
 ```
 
-macOS 没有 `python` 命令时使用 `python3`。转换图标：
+脚本会在仓库内创建 `.venv`，不会修改 macOS 系统 Python。它优先使用 Homebrew 或用户目录中较新的 Python，并兼容 Apple Silicon、Intel Mac，以及 Command Line Tools 自带的 Python 3.9。后续工具使用 `.venv/bin/python`：
 
 ```bash
-python tools/convert_icon.py icon.png icon.webp
+.venv/bin/python tools/convert_icon.py icon.png icon.webp
 ```
 
-脚本保持原尺寸并生成无损 WEBP。来源已经是 WEBP 时直接保存。不要求安装 Android SDK、ADB 或逆向工具。
+Python 3.9 会自动安装兼容的 Pillow 11.x；Python 3.10 及以上使用 Pillow 12.x，避免运行中临时降级依赖。
+
+其他系统可以手动创建隔离环境并安装依赖：
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+Windows 的解释器路径为 `.venv/Scripts/python.exe`。
+
+## 下载公开文件直链
+
+先生成当前应用在所有启用来源中的搜索入口，避免遗漏 APKPure 等优先来源：
+
+```bash
+.venv/bin/python tools/build_source_searches.py "Settlemate" --package-name "io.settlemate.app"
+```
+
+输出只用于本轮批量搜索，不写本地审计文件。查询记录、候选结果、精确页验证和实际下载是四个不同阶段；回复用户时不得混为一谈。
+每行最后还会给出受阻时使用的外部限定域名查询。关键词和包名必须分别查询，不能合并成一个同时要求两者出现的查询；两条都完成后才能写“无匹配候选”。
+
+取得当前版本下载页后，使用一体化工具解析真实链接并立即下载：
+
+```bash
+.venv/bin/python tools/download_from_page.py "https://example.com/app/download/apk" "downloads/example_1.2.3.xapk" --package-name "com.example.app" --version "1.2.3" --page-timeout 20 --download-timeout 20 --retries 1
+```
+
+工具输出 `download_link` 后会自动调用下载工具，不再需要手工复制临时签名链接。仅诊断页面且不保存文件时，仍可使用：
+
+```bash
+.venv/bin/python tools/extract_download_link.py "https://example.com/app/download/apk" --package-name "com.example.app" --version "1.2.3" --timeout 20
+```
+
+APKCombo 只返回“Downloading / Sorry, something went wrong”动态占位页时，工具输出
+`classification=browser_required` 和 `pipeline_result=browser_required`。Agent 应自动在真实
+Chrome 中打开同一精确页并点击唯一匹配版本，不应要求用户复制临时链接。
+同样，Uptodown 的精确公开页对非浏览器客户端返回 `404` 或不下发动态
+按钮时，也会返回 `browser_required`，由 Agent 在 Chrome 中自动完成。
+APKPure 精确详情页只渲染“Download APK/XAPK”中间入口时也使用同一分类，
+Agent 会自动进入 `/download` 页并提取 `d.apkpure.*` 公开文件链接。
+
+`download_file.py` 首次 Python 请求遇到 TLS/连接错误时，第二次会自动使用 IPv4 +
+HTTP/1.1 的系统 `curl` 从已收到的临时分片续传，以兼容 macOS 下会主动断开
+HTTP/2 或大文件超时的 APK CDN，不会降级 HTTPS。
+
+一体化工具会识别 APKCombo 的 `/r2?u=`、`/d?u=` 和普通变体链接。页面只是加载 reCAPTCHA/Turnstile 脚本或隐藏 badge 时不会误报验证码；只有可见验证码容器、iframe 或明确验证文字才返回 `captcha_required`。批量搜索只负责发现候选 URL；不得用批量请求的部分 HTML 或临时正则判断精确页“无直链”。
+
+结果为 `classification=download_link`、`pipeline_result=download_failed` 时，表示链接存在但 Python/curl 下载失败。此时必须改用真实 Chrome 在同一页面点击已确认的唯一版本链接，并用浏览器原生下载一次；不能报告成“无直链”。
+
+下载工具以临时文件下载并原子保存，只重试一次；第一次 Python TLS 连接失败时，第二次自动使用系统 `curl`。它会拒绝 HTML 验证页和不是 ZIP 格式的伪 APK。图标转换脚本保持原尺寸并生成无损 WEBP；来源已经是 WEBP 时直接保存。不要求安装 Android SDK、ADB 或逆向工具。
 
 ## 受阻页面快速探测
 
 镜像站出现 Cloudflare、`403`、`404` 或 `410` 时，使用标准库工具快速判断原因：
 
 ```bash
-python tools/probe_url.py "https://example.com/app/package.name"
+.venv/bin/python tools/probe_url.py "https://example.com/app/package.name"
 ```
 
-macOS 没有 `python` 命令时使用 `python3`。工具会使用完整浏览器导航请求头，并返回 `ok`、`cloudflare_challenge`、`gone`、`not_found`、`rate_limited` 或站点错误。它不保存 Cookie，也不需要 Selenium、Playwright 或 `requests`。
+工具会使用完整浏览器导航请求头，并返回 `ok`、`cloudflare_challenge`、`gone`、`not_found`、`rate_limited` 或站点错误。它不保存 Cookie，也不需要 Selenium、Playwright 或 `requests`。
 
-优先探测精确应用页，不要用镜像站首页判断整个站点是否可用。`200` 只表示页面可访问；最终安装包响应仍需确认不是 HTML 或验证页。搜索页遇到 Cloudflare 时立即改用外部 `site:` 查询，不自动启动浏览器。
+优先探测精确应用页，不要用镜像站首页判断整个站点是否可用。`200` 只表示页面可访问；最终安装包响应仍需确认不是 HTML 或验证页。搜索页遇到 Cloudflare 时先用外部 `site:` 查询继续检索，但如果外部查询没有候选或该来源仍是最高优先级，必须执行下述真实 Chrome 优先后备。
+
+### Cloudflare 后备
+
+公开 APK 搜索页、详情页或下载页确认出现 Cloudflare 挑战时，先复用用户当前的真实 Chrome；45 秒内仍受阻或没有可控会话时，再使用 [onlyGuo/Cloudflare-Faker](https://github.com/onlyGuo/Cloudflare-Faker)。这样通常不需要安装额外运行环境，并能直接复用同一浏览器中的验证状态。
+
+Chrome 通过后继续使用同一浏览器会话，不导出或打印 Cookie；仍依赖浏览器验证状态的文件使用 Chrome 原生下载。Cloudflare-Faker 固定版本为 `5b0f2a4759d7b84c36e37afbe5c2e6400706b6c6`，本地放在 `tools/vendor/Cloudflare-Faker/`，不提交到 Git。
+
+Cloudflare-Faker 需要 GUI、Chrome、JDK 24 和开发者模式扩展；缺少前置条件时明确提示，不静默安装系统组件。服务只能监听本机回环地址，不能暴露端口 `8080`。真实 Chrome 与 Cloudflare-Faker 各最多 45 秒、合计最多 75 秒，并计入每关键词 150 秒总时限。二者都失败后才能创建 `download-note.txt`。
 
 ## 快速模式
 
 默认时限来自 `sources.json` 的 `searchPolicy`：
 
-- 每个来源最多 20 秒。
+- 普通来源操作最多 20 秒；确认 Cloudflare 后使用单独的后备预算，真实 Chrome 与 Cloudflare-Faker 合计最多 75 秒。
+- 公开文件直链每次最多 20 秒，只重试一次。
 - 第 120 秒停止搜索，开始保存已有结果。
 - 每个关键词最多 150 秒。
 - 官方身份查询和独立镜像查询分别批量执行。
+- 多关键词任务按“身份、镜像、解析下载”三个阶段批量处理，不逐项串行跑完整流程。
+- 相同查询批次不重复提交，直接复用已有结果。
 - 找到当前版本安装包立即结束；只有旧版本时写入 `download-note.txt` 后结束。
-- 默认禁止自动启动可见浏览器。只有用户明确要求浏览器尝试，并且已有精确当前版本下载页时才使用。
+- 普通页面不自动启动可见浏览器；确认是公开 APK 页面上的 Cloudflare 挑战时，必须先复用现有 Chrome，会话仍受阻时再使用 Cloudflare-Faker。
 
-“可见浏览器”是 Agent 控制的真实浏览器窗口。它能执行 JavaScript 和保留临时 Cookie，但启动、Cloudflare 等待和人工验证都可能显著增加耗时，因此不属于默认快速搜索流程。
+“可见浏览器”是 Agent 控制的真实浏览器窗口。它能执行 JavaScript 并在浏览器内部保留验证状态。普通页面仍遵循快速流程；真实 Chrome 和 Cloudflare-Faker 是确认挑战后的限定例外。
 
 ## 迁移到另一台电脑
 
@@ -79,7 +144,7 @@ python -m pip install -r requirements.txt
 ```bash
 git clone <PRIVATE_REPOSITORY_URL> Find-apk
 cd Find-apk
-python3 -m pip install -r requirements.txt
+sh tools/setup_macos.sh
 ```
 
 然后在 Codex 中直接打开 `Find-apk` 目录，新建任务并发送：
