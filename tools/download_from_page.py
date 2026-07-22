@@ -6,11 +6,13 @@ from __future__ import annotations
 import argparse
 from html.parser import HTMLParser
 from pathlib import Path
+import re
 import socket
 import subprocess
 import sys
-from urllib.error import URLError
-from urllib.parse import parse_qs, unquote, urljoin, urlparse, urlunparse
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse, urlunparse
+from urllib.request import Request, urlopen
 
 from extract_download_link import (
     VERSION_POLICIES,
@@ -19,12 +21,31 @@ from extract_download_link import (
     analyze_html,
     fetch_page,
 )
+from http_headers import BROWSER_NAVIGATION_HEADERS
 
 
 TOOLS_DIR = Path(__file__).resolve().parent
 DOWNLOAD_TOOL = TOOLS_DIR / "download_file.py"
 PACKAGE_SUFFIXES = {".apk", ".xapk", ".apkm", ".apks"}
-LARGE_PACKAGE_TIMEOUT = 60.0
+LARGE_PACKAGE_TIMEOUT = 900.0
+APKPURE_CDN_BASE = "https://d.apkpure.com/b"
+APKPURE_CDN_CONTENT_TYPES = {
+    "APK": {
+        "application/vnd.android.package-archive",
+        "application/octet-stream",
+        "application/zip",
+    },
+    "XAPK": {
+        "application/xapk-package-archive",
+        "application/octet-stream",
+        "application/zip",
+    },
+}
+APKPURE_CDN_HEADERS = {
+    "User-Agent": BROWSER_NAVIGATION_HEADERS["User-Agent"],
+    "Accept": "*/*",
+    "Accept-Language": BROWSER_NAVIGATION_HEADERS["Accept-Language"],
+}
 
 
 class APKMirrorLinkParser(HTMLParser):
@@ -83,6 +104,93 @@ def apkpure_download_page_url(
     if expected_package.casefold() not in unquote(path).casefold():
         return None
     return urlunparse(parsed._replace(path=f"{path}/download", query="", fragment=""))
+
+
+def is_apkpure_cdn_url(url: str) -> bool:
+    hostname = (urlparse(url).hostname or "").casefold()
+    return hostname in {"d.apkpure.com", "d.apkpure.net"}
+
+
+def apkpure_cdn_candidate_urls(
+    expected_package: str, preferred_suffix: str | None = None
+) -> list[tuple[str, str]]:
+    """Return stable APKPure CDN endpoints in the requested package format."""
+    normalized_suffix = (preferred_suffix or "").casefold()
+    if normalized_suffix == ".apk":
+        formats = ("APK",)
+    elif normalized_suffix == ".xapk":
+        formats = ("XAPK",)
+    elif normalized_suffix in {".apkm", ".apks"}:
+        formats = ()
+    else:
+        formats = ("XAPK", "APK")
+    package = quote(expected_package, safe=".")
+    return [
+        (package_format, f"{APKPURE_CDN_BASE}/{package_format}/{package}?version=latest")
+        for package_format in formats
+    ]
+
+
+def probe_apkpure_cdn_download(
+    expected_package: str,
+    timeout: float,
+    preferred_suffix: str | None = None,
+) -> tuple[str, PageResult] | None:
+    """HEAD stable APKPure endpoints and accept only a matching package archive."""
+    for package_format, candidate_url in apkpure_cdn_candidate_urls(
+        expected_package, preferred_suffix
+    ):
+        request = Request(candidate_url, headers=APKPURE_CDN_HEADERS, method="HEAD")
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                status = int(getattr(response, "status", response.getcode()))
+                final_url = response.geturl()
+                content_type = response.headers.get("Content-Type", "")
+                content_length = response.headers.get("Content-Length", "")
+                disposition = unquote(
+                    response.headers.get("Content-Disposition", "")
+                ).casefold()
+        except (HTTPError, URLError, socket.timeout, TimeoutError, OSError):
+            continue
+
+        normalized_type = content_type.partition(";")[0].strip().casefold()
+        final_package = parse_qs(urlparse(final_url).query).get("package_name", [])
+        package_matches = bool(final_package) and any(
+            value.casefold() == expected_package.casefold() for value in final_package
+        )
+        filenames = parse_qs(urlparse(final_url).query).get("filename", [])
+        final_filename = filenames[0].casefold() if filenames else disposition
+        format_matches = (
+            normalized_type in APKPURE_CDN_CONTENT_TYPES[package_format]
+            and final_filename.rstrip('"').endswith(
+                f".{package_format.casefold()}"
+            )
+        )
+        if (
+            status == 200
+            and package_matches
+            and format_matches
+            and content_length.isdigit()
+            and int(content_length) > 0
+        ):
+            return (
+                candidate_url,
+                PageResult(status, final_url, content_type, ""),
+            )
+    return None
+
+
+def apkpure_cdn_detected_version(final_url: str) -> str | None:
+    """Extract APKPure's actual latest version from the signed CDN filename."""
+    filenames = parse_qs(urlparse(final_url).query).get("filename", [])
+    if not filenames:
+        return None
+    match = re.search(
+        r"_([0-9][0-9A-Za-z.+-]*)_APKPure\.(?:apk|xapk)$",
+        filenames[0],
+        re.IGNORECASE,
+    )
+    return match.group(1) if match else None
 
 
 def is_apkmirror_url(url: str) -> bool:
@@ -144,6 +252,7 @@ def resolve_download_page(
     expected_version: str,
     timeout: float,
     version_policy: str = "prefer-latest",
+    preferred_suffix: str | None = None,
 ) -> tuple[PageResult, Analysis, str | None]:
     """Resolve one page, including APKPure's public detail-to-download transition."""
     page = fetch_page(page_url, timeout)
@@ -172,6 +281,51 @@ def resolve_download_page(
                 ),
                 detected_version,
             )
+            if analysis.classification in {
+                "browser_required",
+                "cloudflare_challenge",
+                "gone",
+                "not_found",
+                "no_download_link",
+            }:
+                cdn_result = probe_apkpure_cdn_download(
+                    expected_package,
+                    timeout,
+                    preferred_suffix,
+                )
+                if cdn_result is not None:
+                    cdn_url, page = cdn_result
+                    transition_url = cdn_url
+                    analysis = Analysis(
+                        "download_link",
+                        [cdn_url],
+                        False,
+                        apkpure_cdn_detected_version(page.final_url)
+                        or detected_version,
+                    )
+    elif analysis.classification == "cloudflare_challenge":
+        # An exact APKPure candidate may be intermittently challenged while
+        # its public package CDN remains available.  The stable endpoint is
+        # still verified by its redirected package_name, format, type, and
+        # content length before it is accepted.
+        exact_download_url = apkpure_download_page_url(
+            page.final_url, expected_package
+        )
+        if exact_download_url is not None:
+            cdn_result = probe_apkpure_cdn_download(
+                expected_package,
+                timeout,
+                preferred_suffix,
+            )
+            if cdn_result is not None:
+                cdn_url, page = cdn_result
+                transition_url = cdn_url
+                analysis = Analysis(
+                    "download_link",
+                    [cdn_url],
+                    False,
+                    apkpure_cdn_detected_version(page.final_url),
+                )
     if analysis.classification == "no_download_link" and is_apkmirror_url(
         page.final_url
     ):
@@ -208,6 +362,7 @@ def main() -> int:
             args.version,
             args.page_timeout,
             args.version_policy,
+            args.output.suffix.lower(),
         )
     except (URLError, socket.timeout, TimeoutError, ConnectionError, OSError, ValueError) as error:
         print("classification=network_error")
@@ -216,11 +371,12 @@ def main() -> int:
         return 1
 
     if transition_url is not None:
-        transition = (
-            "apkmirror_download_page"
-            if is_apkmirror_url(transition_url)
-            else "apkpure_download_page"
-        )
+        if is_apkmirror_url(transition_url):
+            transition = "apkmirror_download_page"
+        elif is_apkpure_cdn_url(transition_url):
+            transition = "apkpure_cdn_fallback"
+        else:
+            transition = "apkpure_download_page"
         print(f"transition={transition}")
         print(f"transition_page_url={transition_url}")
     print(f"classification={analysis.classification}")

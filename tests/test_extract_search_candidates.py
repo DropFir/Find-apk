@@ -12,6 +12,26 @@ from extract_search_candidates import analyze_search_html  # noqa: E402
 
 
 class AnalyzeSearchHtmlTests(unittest.TestCase):
+    def test_apkpure_search_finds_exact_pokemon_unite_package(self) -> None:
+        html = """
+        <a href="/pokemon-unite-game/jp.pokemon.pokemonunite">
+          Pokémon UNITE
+        </a>
+        """
+        result = analyze_search_html(
+            html,
+            "https://apkpure.com/search?q=Pok%C3%A9mon+UNITE",
+            "https://apkpure.com/search?q=Pok%C3%A9mon+UNITE",
+            200,
+            "jp.pokemon.pokemonunite",
+        )
+
+        self.assertEqual(result.classification, "candidate_found")
+        self.assertEqual(
+            result.links,
+            ["https://apkpure.com/pokemon-unite-game/jp.pokemon.pokemonunite"],
+        )
+
     def test_apkpure_search_finds_exact_myinstants_package(self) -> None:
         html = """
         <a href="/myinstants-sound-buttons/myinstants.com.soundboard.soundbuttons.meme.effects.sound">

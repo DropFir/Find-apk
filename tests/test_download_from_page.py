@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import io
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import threading
 import unittest
+import zipfile
 from unittest.mock import patch
+from unittest.mock import MagicMock
 
 
 TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
@@ -16,14 +19,27 @@ sys.path.insert(0, str(TOOLS_DIR))
 from download_from_page import (  # noqa: E402
     apkmirror_final_download_url,
     apkmirror_intermediate_page_url,
+    apkpure_cdn_candidate_urls,
+    apkpure_cdn_detected_version,
     apkpure_download_page_url,
     resolve_download_page,
 )
 from extract_download_link import PageResult  # noqa: E402
 
 
+def package_page_payload() -> bytes:
+    base = io.BytesIO()
+    with zipfile.ZipFile(base, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("AndroidManifest.xml", b"manifest")
+        archive.writestr("classes.dex", b"pure-java")
+    outer = io.BytesIO()
+    with zipfile.ZipFile(outer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("base.apk", base.getvalue())
+    return outer.getvalue()
+
+
 class PackagePageHandler(BaseHTTPRequestHandler):
-    payload = b"PK\x03\x04" + (b"resolved-package" * 64)
+    payload = package_page_payload()
 
     def do_GET(self) -> None:
         if self.path == "/download/apk":
@@ -53,6 +69,33 @@ class PackagePageHandler(BaseHTTPRequestHandler):
 
 
 class DownloadFromPageTests(unittest.TestCase):
+    def test_apkpure_apk_probe_rejects_xapk_redirect(self) -> None:
+        package = "com.swiftappskom.thetigerrpg"
+        final_url = (
+            "https://data.winudf.com/XAPK/file?"
+            f"filename=The+Tiger_2.3.1_APKPure.xapk&package_name={package}"
+        )
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        response.status = 200
+        response.getcode.return_value = 200
+        response.geturl.return_value = final_url
+        response.headers.get.side_effect = lambda name, default="": {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": "149274666",
+            "Content-Disposition": 'attachment; filename="The Tiger_2.3.1_APKPure.xapk"',
+        }.get(name, default)
+
+        with patch("download_from_page.urlopen", return_value=response):
+            result = __import__("download_from_page").probe_apkpure_cdn_download(
+                package,
+                20,
+                ".apk",
+            )
+
+        self.assertIsNone(result)
+
     def test_apkmirror_page_automatically_resolves_final_download_endpoint(self) -> None:
         package = "com.sirius"
         detail_url = (
@@ -177,32 +220,108 @@ class DownloadFromPageTests(unittest.TestCase):
         self.assertEqual(analysis.detected_version, "13.22")
         self.assertEqual(analysis.links, [direct_url])
 
-    def test_apkpure_transition_failure_keeps_detail_page_version(self) -> None:
-        package = "com.pinger.textfree.call"
-        detail_url = f"https://apkpure.com/text-free/{package}"
+    def test_apkpure_gone_download_page_uses_verified_cdn_fallback(self) -> None:
+        package = "jp.pokemon.pokemonunite"
+        detail_url = f"https://apkpure.com/pokemon-unite-game/{package}"
         download_url = f"{detail_url}/download"
+        cdn_url = f"https://d.apkpure.com/b/XAPK/{package}?version=latest"
+        cdn_page = PageResult(
+            200,
+            f"https://data.winudf.com/file?package_name={package}",
+            "application/xapk-package-archive",
+            "",
+        )
         pages = {
             detail_url: PageResult(
                 200,
                 detail_url,
                 "text/html",
-                f'<script>window.app={{"versionName":"13.22"}}</script>{package}',
+                f'<script>window.app={{"versionName":"1.23.1.7"}}</script>{package}',
             ),
             download_url: PageResult(410, download_url, "text/html", "gone"),
         }
 
-        with patch("download_from_page.fetch_page", side_effect=lambda url, timeout: pages[url]):
+        with (
+            patch(
+                "download_from_page.fetch_page",
+                side_effect=lambda url, timeout: pages[url],
+            ),
+            patch(
+                "download_from_page.probe_apkpure_cdn_download",
+                return_value=(cdn_url, cdn_page),
+            ) as probe,
+        ):
             page, analysis, transition = resolve_download_page(
                 detail_url,
                 package,
-                "13.21",
+                "1.23.1.7",
                 20,
+                preferred_suffix=".xapk",
             )
 
-        self.assertEqual(transition, download_url)
-        self.assertEqual(page.final_url, download_url)
-        self.assertEqual(analysis.classification, "gone")
-        self.assertEqual(analysis.detected_version, "13.22")
+        probe.assert_called_once_with(package, 20, ".xapk")
+        self.assertEqual(transition, cdn_url)
+        self.assertEqual(page.final_url, cdn_page.final_url)
+        self.assertEqual(analysis.classification, "download_link")
+        self.assertEqual(analysis.links, [cdn_url])
+        self.assertEqual(analysis.detected_version, "1.23.1.7")
+
+    def test_apkpure_cdn_candidates_preserve_requested_format(self) -> None:
+        package = "jp.pokemon.pokemonunite"
+        self.assertEqual(
+            apkpure_cdn_candidate_urls(package, ".xapk"),
+            [("XAPK", f"https://d.apkpure.com/b/XAPK/{package}?version=latest")],
+        )
+        self.assertEqual(
+            apkpure_cdn_candidate_urls(package, ".apk"),
+            [("APK", f"https://d.apkpure.com/b/APK/{package}?version=latest")],
+        )
+
+    def test_apkpure_cdn_filename_supplies_actual_version(self) -> None:
+        url = (
+            "https://data.winudf.com/XAPK/file?"
+            "filename=Pok%C3%A9mon+UNITE_1.23.1.7_APKPure.xapk&"
+            "package_name=jp.pokemon.pokemonunite"
+        )
+        self.assertEqual(apkpure_cdn_detected_version(url), "1.23.1.7")
+
+    def test_exact_apkpure_cloudflare_page_can_use_public_cdn(self) -> None:
+        package = "jp.pokemon.pokemonunite"
+        detail_url = f"https://apkpure.com/pokemon-unite-game/{package}"
+        cdn_url = f"https://d.apkpure.com/b/XAPK/{package}?version=latest"
+        cdn_page = PageResult(
+            200,
+            "https://data.winudf.com/XAPK/file?"
+            f"filename=Pok%C3%A9mon+UNITE_1.23.1.7_APKPure.xapk&package_name={package}",
+            "application/xapk-package-archive",
+            "",
+        )
+        challenged_page = PageResult(
+            403,
+            detail_url,
+            "text/html",
+            "<html><title>Just a moment</title>cf-chl-</html>",
+        )
+
+        with (
+            patch("download_from_page.fetch_page", return_value=challenged_page),
+            patch(
+                "download_from_page.probe_apkpure_cdn_download",
+                return_value=(cdn_url, cdn_page),
+            ),
+        ):
+            page, analysis, transition = resolve_download_page(
+                detail_url,
+                package,
+                "1.23.1.6",
+                20,
+                preferred_suffix=".xapk",
+            )
+
+        self.assertEqual(transition, cdn_url)
+        self.assertEqual(page.final_url, cdn_page.final_url)
+        self.assertEqual(analysis.classification, "download_link")
+        self.assertEqual(analysis.detected_version, "1.23.1.7")
 
     def test_resolves_and_downloads_in_one_command(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), PackagePageHandler)

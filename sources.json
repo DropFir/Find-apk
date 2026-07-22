@@ -7,7 +7,11 @@
     "directDownloadTimeoutSeconds": 20,
     "directDownloadRetries": 1,
     "largePackageThresholdBytes": 52428800,
-    "largePackageTimeoutSeconds": 60,
+    "largePackageMinimumTimeoutSeconds": 60,
+    "largePackageMaximumTimeoutSeconds": 900,
+    "largePackageMinimumBytesPerSecond": 524288,
+    "verifiedLargeTransferHasIndependentBudget": true,
+    "verifiedLargeTransferMayFinishAfterSearchDeadline": true,
     "persistPartialAcrossCommands": true,
     "resumePersistedPartialOnceBeforeBrowser": true,
     "extractDownloadLinkBeforeDeclaringBlocked": true,
@@ -50,6 +54,7 @@
     "probeOkDoesNotCompleteSearch": true,
     "candidateFoundMustBeVerifiedBeforeBrowserOrNextSource": true,
     "downloadNoteForbiddenWhileCandidateUnverified": true,
+    "skipPaidAppsBeforeMirrorSearch": true,
     "onCloudflareChallenge": "externalQueryThenRealChromeThenCloudflareFaker",
     "automaticBrowserFallback": true,
     "batchIndependentQueries": true,
@@ -59,6 +64,7 @@
   "searchPagePolicy": {
     "tool": "tools/extract_search_candidates.py",
     "requireExactPackageMatch": true,
+    "exactPackageMatchAppliesToPrimarySearchStage": true,
     "candidateFoundAction": "verifyExactPageImmediately",
     "genericSearchRedirectAction": "runExternalFallback",
     "networkErrorStatus": "unchecked",
@@ -69,6 +75,37 @@
     "askUserOnAmbiguousKeyword": false,
     "continueWithoutClarification": true,
     "reusePreviouslyVerifiedIdentityForSameKeyword": true,
+    "currentGooglePlayFinalUrlIsPrimaryPackageEvidence": true,
+    "extractPackageFromGooglePlayIdParameter": true,
+    "requireTitleAndDeveloperMatchOnOfficialPage": true,
+    "agentMemoryOrTypedQueryIsNotPackageEvidence": true,
+    "staleOrUnopenedSearchResultIsNotPackageEvidence": true,
+    "recordOfficialIdentityTripleBeforeSourcePlan": true,
+    "officialIdentityTriple": [
+      "googlePlayFinalUrl",
+      "packageNameFromId",
+      "titleAndDeveloper"
+    ],
+    "unverifiedPackageCannotFilterAllMirrorCandidates": true,
+    "currentOfficialPackageOverridesHistoricalPackage": true,
+    "rerunFullSourcePlanAfterPackageCorrection": true,
+    "zeroExactCandidatesTriggersIdentityRecheck": true,
+    "enumerateRegionalAndPlatformVariantsBeforeLockingPackage": true,
+    "genericKeywordPrefersPhoneOrTabletOverTv": true,
+    "platformAndRegionClaimsRequireOfficialEvidence": true,
+    "exactUserUrlOverridesPriorIdentity": true,
+    "reopenIdentityWhenSelectedPackageUnavailable": true,
+    "failureScope": [
+      "sourceDomain",
+      "packageName",
+      "exactUrl"
+    ],
+    "packageFailureCannotGeneralizeToSiblingPackages": true,
+    "variantAuditQueries": [
+      "site:play.google.com/store/apps/details \"{keyword}\"",
+      "site:apkpure.com \"{keyword}\" APK",
+      "site:apkmirror.com \"{keyword}\" APK"
+    ],
     "ranking": [
       "user_supplied_identity",
       "previously_verified_same_keyword_identity",
@@ -77,6 +114,73 @@
       "strongest_complete_official_evidence"
     ],
     "reportAutomaticChoiceInFinal": true
+  },
+  "sameTitlePackageFallbackPolicy": {
+    "enabled": true,
+    "onlyAfterOfficialPackageSourcesExhausted": true,
+    "mustRunBeforeDownloadNote": true,
+    "allowDifferentPackageName": true,
+    "requireExactOrConfirmedHistoricalTitle": true,
+    "requireMatchingDeveloperOrBrandEvidence": true,
+    "requireMatchingIconAndPurpose": true,
+    "rejectUnrelatedDeveloperWithoutBrandEvidence": true,
+    "allowedCandidateTypes": [
+      "staging",
+      "beta",
+      "internal",
+      "regional",
+      "legacy_release",
+      "pre_release"
+    ],
+    "downloadUsingActualCandidatePackage": true,
+    "neverOverrideOfficialGooglePlayIdentity": true,
+    "filenameMustDiscloseVariant": true,
+    "finalMustReportOfficialAndDownloadedPackageNames": true,
+    "finalMustDiscloseNonProductionCandidate": true,
+    "askUserBeforeFallback": false,
+    "paidAppSkipOverridesFallback": true,
+    "userSpecifiedExactPackageDisablesFallback": true,
+    "modOrCrackedCandidatesForbidden": true
+  },
+  "batchCompletionPolicy": {
+    "partialProgressIsNotFinal": true,
+    "allKeywordsRequireTerminalResult": true,
+    "terminalResults": [
+      "package_saved",
+      "paid_app_skipped",
+      "download_note_saved_after_exhaustion"
+    ],
+    "orderedRequestPreservesOutputOrderOnly": true,
+    "orderedRequestStillUsesPhasedBatchExecution": true,
+    "mustNotIdleWithRemainingKeywords": true
+  },
+  "paidAppPolicy": {
+    "enabled": true,
+    "terminalStatus": "paid_app_skipped",
+    "officialCurrentPageEvidenceRequired": true,
+    "paidIndicators": [
+      "visible_price_with_buy_action",
+      "official_store_buy_label",
+      "developer_calls_title_paid_or_premium"
+    ],
+    "inAppPurchasesAloneDoNotMeanPaid": true,
+    "skipBeforeSourcePlan": true,
+    "continueBatchWithoutQuestion": true,
+    "forbidMirrorSearchAfterPaidConfirmation": true,
+    "forbidFreeDownloadQueries": true,
+    "forbidModUnlockedOrCrackedResults": true,
+    "forbidBrowserCloudflareAndCdnFallback": true,
+    "createKeywordDirectory": false,
+    "createDownloadNote": false,
+    "finalFields": [
+      "appName",
+      "developer",
+      "packageName",
+      "paid_app_skipped",
+      "officialPurchaseUrl"
+    ],
+    "officialLimitedTimeFreeWithInstallActionIsNotPaid": true,
+    "developerAuthorizedPublicFileUrlCanBeHandledWhenUserProvidesIt": true
   },
   "versionSelectionPolicy": {
     "defaultMode": "prefer-latest",
@@ -97,12 +201,62 @@
     "manualEntryMustUseBlockedPage": true,
     "apkpureDetailToDownloadTransition": "automatic",
     "apkpureTransitionTool": "tools/download_from_page.py",
+    "apkpureCdnFallbackAfterDownloadPageFailure": true,
+    "apkpureCdnFallbackAfterExactPageChallenge": true,
+    "apkpureCdnFormats": [
+      "XAPK",
+      "APK"
+    ],
+    "apkpureCdnFallbackTool": "tools/download_from_page.py",
+    "searchCandidateAndDownloadOutcomeAreSeparate": true,
+    "apkpureFinalFormatRequiresFilenameAndContentType": true,
+    "apkpureRouteLabelDoesNotProveFinalFormat": true,
+    "packageExtensionMustMatchVerifiedFinalFormat": true,
+    "retryWithDetectedFormatWhenUserDidNotSpecifyFormat": true,
     "browserOnlyAfterApkpureDownloadPageFails": true,
     "browserMustOpenApkpureDownloadPage": true,
     "apkmirrorVariantToFileTransition": "automatic",
     "apkmirrorTransitionTool": "tools/download_from_page.py",
     "sharedNavigationHeaders": "tools/http_headers.py",
     "networkTimeoutRequiresActualTimeoutEvidence": true
+  },
+  "packageCompletenessPolicy": {
+    "enabled": true,
+    "tool": "tools/download_file.py",
+    "existingPackageValidationTool": "tools/validate_package.py",
+    "validateExistingPackageBeforeReuse": true,
+    "existingFilePresenceIsNotSuccess": true,
+    "zipValidityDoesNotProveStandaloneInstallability": true,
+    "inspectApkStructureOnly": true,
+    "rejectBaseApkWhenAllSignalsMatch": [
+      "split_descriptor_present",
+      "native_game_engine_marker_present",
+      "no_embedded_abi_shared_library"
+    ],
+    "nativeGameEngines": [
+      "Unity",
+      "Cocos2d-x",
+      "Unreal Engine",
+      "Godot"
+    ],
+    "rejectionMessage": "missing its required ABI split",
+    "rejectionAction": "downloadSameVersionXapkApkmOrApks",
+    "baseApkCannotBeTerminalSuccess": true,
+    "fullSplitArchiveRequiresCompleteOuterCrc": true,
+    "fullSplitArchiveRequiresNestedApk": true,
+    "fullSplitPackageRequiresBaseApk": true,
+    "nativeAppRequiresAbiSplitContainingSo": true,
+    "keepOldCandidateUntilReplacementValidated": true,
+    "removeRejectedBaseAfterReplacementSaved": true
+  },
+  "downloadConcurrencyPolicy": {
+    "singleWriterPerOutputPath": true,
+    "lockTool": "tools/download_file.py",
+    "lockFilePattern": ".<output-name>.lock",
+    "concurrentWriterAction": "waitThenVerifyExistingResult",
+    "neverShareWritablePartialBetweenProcesses": true,
+    "crcCheckRequiredAfterDetectedConcurrency": true,
+    "corruptConcurrentResultAction": "quarantineThenCleanSingleProcessDownload"
   },
   "cloudflareFallback": {
     "enabled": true,

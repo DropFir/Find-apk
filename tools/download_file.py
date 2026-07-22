@@ -6,11 +6,14 @@ from __future__ import annotations
 import argparse
 from http.client import HTTPException, IncompleteRead
 import os
+import re
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
+import zipfile
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -27,7 +30,161 @@ ZIP_SIGNATURES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 CHUNK_SIZE = 1024 * 1024
 INSPECT_SIZE = 512
 LARGE_PACKAGE_BYTES = 50 * 1024 * 1024
-LARGE_PACKAGE_TIMEOUT = 60.0
+LARGE_PACKAGE_MIN_TIMEOUT = 60.0
+LARGE_PACKAGE_MAX_TIMEOUT = 900.0
+LARGE_PACKAGE_MIN_BYTES_PER_SECOND = 512 * 1024
+DEX_ENTRY_PATTERN = re.compile(r"^classes(?:[0-9]+)?\.dex$")
+SPLIT_DESCRIPTOR_PATTERN = re.compile(r"^res/xml/splits[^/]*\.xml$")
+NATIVE_ENGINE_MARKERS = (
+    b"cocos2dcpp",
+    b"android_cocos2dx",
+    b"com/unity3d/player/UnityPlayer",
+    b"com/unity3d/player/NativeLoader",
+    b"libil2cpp.so",
+    b"libUE4.so",
+    b"libgodot_android.so",
+)
+MARKER_OVERLAP = max(len(marker) for marker in NATIVE_ENGINE_MARKERS) - 1
+ABI_SPLIT_PATTERN = re.compile(
+    r"(?:^|[._-])(?:arm64[_-]?v8a|armeabi[_-]?v7a|armeabi|x86_64|x86)(?:[._-]|$)",
+    re.IGNORECASE,
+)
+
+
+def archive_entry_contains_native_engine_marker(
+    archive: zipfile.ZipFile, entry_name: str
+) -> bool:
+    """Scan a DEX incrementally for high-confidence native game engine markers."""
+    tail = b""
+    with archive.open(entry_name) as entry:
+        while chunk := entry.read(CHUNK_SIZE):
+            inspected = tail + chunk
+            if any(marker in inspected for marker in NATIVE_ENGINE_MARKERS):
+                return True
+            tail = inspected[-MARKER_OVERLAP:]
+    return False
+
+
+def inspect_apk_archive(archive: zipfile.ZipFile) -> tuple[bool, bool, bool]:
+    names = set(archive.namelist())
+    has_native_library = any(
+        name.startswith("lib/") and name.casefold().endswith(".so") for name in names
+    )
+    has_split_descriptor = any(
+        SPLIT_DESCRIPTOR_PATTERN.fullmatch(name) for name in names
+    )
+    dex_entries = [name for name in names if DEX_ENTRY_PATTERN.fullmatch(name)]
+    requires_native_engine = any(
+        archive_entry_contains_native_engine_marker(archive, name)
+        for name in dex_entries
+    )
+    return has_native_library, has_split_descriptor, requires_native_engine
+
+
+def validate_apk_split_completeness(path: Path) -> None:
+    """Reject an App Bundle base APK that clearly lacks its required ABI split."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            bad_entry = archive.testzip()
+            if bad_entry is not None:
+                raise ValueError(f"Android package failed ZIP/CRC validation: {bad_entry}")
+            has_native_library, has_split_descriptor, requires_native_engine = (
+                inspect_apk_archive(archive)
+            )
+            if (
+                not has_native_library
+                and has_split_descriptor
+                and requires_native_engine
+            ):
+                raise ValueError(
+                    "APK is an App Bundle base package missing its required ABI "
+                    "split; download the matching XAPK/APKM/APKS instead"
+                )
+    except zipfile.BadZipFile as error:
+        raise ValueError("download is not a valid ZIP-based Android package") from error
+
+
+def inspect_nested_apk(
+    outer_archive: zipfile.ZipFile, entry_name: str
+) -> tuple[bool, bool, bool]:
+    """Inspect one nested APK without keeping another permanent copy on disk."""
+    with tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024) as nested_file:
+        with outer_archive.open(entry_name) as source:
+            shutil.copyfileobj(source, nested_file, CHUNK_SIZE)
+        nested_file.seek(0)
+        with zipfile.ZipFile(nested_file) as nested_archive:
+            bad_entry = nested_archive.testzip()
+            if bad_entry is not None:
+                raise ValueError(
+                    f"nested APK failed ZIP/CRC validation: {entry_name}:{bad_entry}"
+                )
+            return inspect_apk_archive(nested_archive)
+
+
+def select_base_apk_entry(apk_entries: list[str]) -> str | None:
+    """Choose the most likely base APK while avoiding configuration splits."""
+    for entry in apk_entries:
+        basename = Path(entry).name.casefold()
+        if basename in {"base.apk", "base-master.apk"}:
+            return entry
+    non_split_entries = [
+        entry
+        for entry in apk_entries
+        if not Path(entry).name.casefold().startswith(
+            ("config.", "split_config.", "split-", "split_")
+        )
+        and not ABI_SPLIT_PATTERN.search(Path(entry).stem)
+    ]
+    if len(non_split_entries) == 1:
+        return non_split_entries[0]
+    if len(apk_entries) == 1:
+        return apk_entries[0]
+    return None
+
+
+def validate_split_package_completeness(path: Path) -> None:
+    """Validate the outer archive and required native ABI split when identifiable."""
+    try:
+        with zipfile.ZipFile(path) as outer_archive:
+            bad_entry = outer_archive.testzip()
+            if bad_entry is not None:
+                raise ValueError(
+                    f"Android split package failed ZIP/CRC validation: {bad_entry}"
+                )
+            apk_entries = sorted(
+                name
+                for name in outer_archive.namelist()
+                if name.casefold().endswith(".apk") and not name.endswith("/")
+            )
+            if not apk_entries:
+                raise ValueError("Android split package contains no APK files")
+
+            base_entry = select_base_apk_entry(apk_entries)
+            if base_entry is None:
+                return
+            base_has_library, base_has_descriptor, base_requires_native = (
+                inspect_nested_apk(outer_archive, base_entry)
+            )
+            if base_has_library or not (
+                base_has_descriptor and base_requires_native
+            ):
+                return
+
+            abi_entries = [
+                entry
+                for entry in apk_entries
+                if entry != base_entry
+                and ABI_SPLIT_PATTERN.search(Path(entry).stem)
+            ]
+            if not any(
+                inspect_nested_apk(outer_archive, entry)[0] for entry in abi_entries
+            ):
+                raise ValueError(
+                    "Android split package is missing a required ABI APK containing "
+                    "native libraries"
+                )
+    except zipfile.BadZipFile as error:
+        raise ValueError("download is not a valid ZIP-based Android package") from error
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,6 +209,44 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def process_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def acquire_download_lock(output: Path) -> Path:
+    """Prevent two agents from writing or renaming the same partial file."""
+    lock = output.parent / f".{output.name}.lock"
+    for attempt in range(2):
+        try:
+            descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            recorded = lock.read_text(encoding="utf-8", errors="replace").strip()
+            if recorded.isdigit() and process_is_running(int(recorded)):
+                raise RuntimeError(
+                    f"another download is already writing target: {output}"
+                )
+            if attempt == 0:
+                lock.unlink(missing_ok=True)
+                continue
+            raise RuntimeError(f"could not acquire download lock: {lock}")
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as record:
+            record.write(f"{os.getpid()}\n")
+        return lock
+    raise RuntimeError(f"could not acquire download lock: {lock}")
+
+
+def release_download_lock(lock: Path) -> None:
+    recorded = lock.read_text(encoding="utf-8", errors="replace").strip() if lock.exists() else ""
+    if recorded == str(os.getpid()):
+        lock.unlink(missing_ok=True)
+
+
 def validate_download(path: Path, suffix: str, content_type: str) -> None:
     with path.open("rb") as downloaded:
         prefix = downloaded.read(INSPECT_SIZE)
@@ -65,6 +260,10 @@ def validate_download(path: Path, suffix: str, content_type: str) -> None:
 
     if suffix in PACKAGE_SUFFIXES and not prefix.startswith(ZIP_SIGNATURES):
         raise ValueError("download is not a ZIP-based Android package")
+    if suffix == ".apk":
+        validate_apk_split_completeness(path)
+    elif suffix in {".xapk", ".apkm", ".apks"}:
+        validate_split_package_completeness(path)
     if suffix == ".webp" and not (
         prefix.startswith(b"RIFF") and prefix[8:12] == b"WEBP"
     ):
@@ -98,7 +297,17 @@ def effective_download_timeout(
     if suffix in PACKAGE_SUFFIXES and (
         expected_length is None or expected_length >= LARGE_PACKAGE_BYTES
     ):
-        return max(requested, LARGE_PACKAGE_TIMEOUT)
+        if expected_length is None:
+            size_budget = LARGE_PACKAGE_MAX_TIMEOUT
+        else:
+            size_budget = min(
+                LARGE_PACKAGE_MAX_TIMEOUT,
+                max(
+                    LARGE_PACKAGE_MIN_TIMEOUT,
+                    expected_length / LARGE_PACKAGE_MIN_BYTES_PER_SECOND,
+                ),
+            )
+        return max(requested, size_budget)
     return requested
 
 
@@ -233,67 +442,76 @@ def main() -> int:
 
     output = args.output.expanduser().resolve(strict=False)
     output.parent.mkdir(parents=True, exist_ok=True)
-    temporary, partial_metadata = prepare_partial(output, args.url)
-    attempts = args.retries + 1
-    preserve_partial = False
+    try:
+        download_lock = acquire_download_lock(output)
+    except (OSError, RuntimeError) as error:
+        print(f"Download failed: {error}", file=sys.stderr)
+        return 1
 
     try:
-        for attempt in range(1, attempts + 1):
-            try:
-                resume_available = temporary.exists() and temporary.stat().st_size > 0
-                if (attempt > 1 or resume_available) and shutil.which("curl") is not None:
-                    curl_timeout = effective_download_timeout(
-                        args.timeout, output.suffix.lower()
-                    )
-                    final_url, content_type, total = download_with_curl(
-                        args.url, temporary, curl_timeout
-                    )
-                else:
-                    final_url, content_type, total = download_once(
-                        args.url,
-                        temporary,
-                        args.timeout,
-                        output.suffix.lower(),
-                    )
-                validate_download(temporary, output.suffix.lower(), content_type)
-                os.replace(temporary, output)
-                partial_metadata.unlink(missing_ok=True)
-                print(f"output={output.as_posix()}")
-                print(f"bytes={total}")
-                print(f"content_type={content_type}")
-                print(f"final_url={final_url}")
-                return 0
-            except (
-                HTTPError,
-                URLError,
-                HTTPException,
-                socket.timeout,
-                TimeoutError,
-                ConnectionError,
-                subprocess.TimeoutExpired,
-                OSError,
-                ValueError,
-            ) as error:
-                retriable = should_retry(error)
-                if attempt >= attempts or not retriable:
-                    preserve_partial = bool(
-                        retriable
-                        and temporary.exists()
-                        and temporary.stat().st_size > 0
-                    )
-                    print(f"Download failed: {error}", file=sys.stderr)
-                    if preserve_partial:
-                        print(f"partial={temporary.as_posix()}", file=sys.stderr)
-                        print(
-                            f"partial_bytes={temporary.stat().st_size}",
-                            file=sys.stderr,
+        temporary, partial_metadata = prepare_partial(output, args.url)
+        attempts = args.retries + 1
+        preserve_partial = False
+
+        try:
+            for attempt in range(1, attempts + 1):
+                try:
+                    resume_available = temporary.exists() and temporary.stat().st_size > 0
+                    if (attempt > 1 or resume_available) and shutil.which("curl") is not None:
+                        curl_timeout = effective_download_timeout(
+                            args.timeout, output.suffix.lower()
                         )
-                    return 1
-        return 1
+                        final_url, content_type, total = download_with_curl(
+                            args.url, temporary, curl_timeout
+                        )
+                    else:
+                        final_url, content_type, total = download_once(
+                            args.url,
+                            temporary,
+                            args.timeout,
+                            output.suffix.lower(),
+                        )
+                    validate_download(temporary, output.suffix.lower(), content_type)
+                    os.replace(temporary, output)
+                    partial_metadata.unlink(missing_ok=True)
+                    print(f"output={output.as_posix()}")
+                    print(f"bytes={total}")
+                    print(f"content_type={content_type}")
+                    print(f"final_url={final_url}")
+                    return 0
+                except (
+                    HTTPError,
+                    URLError,
+                    HTTPException,
+                    socket.timeout,
+                    TimeoutError,
+                    ConnectionError,
+                    subprocess.TimeoutExpired,
+                    OSError,
+                    ValueError,
+                ) as error:
+                    retriable = should_retry(error)
+                    if attempt >= attempts or not retriable:
+                        preserve_partial = bool(
+                            retriable
+                            and temporary.exists()
+                            and temporary.stat().st_size > 0
+                        )
+                        print(f"Download failed: {error}", file=sys.stderr)
+                        if preserve_partial:
+                            print(f"partial={temporary.as_posix()}", file=sys.stderr)
+                            print(
+                                f"partial_bytes={temporary.stat().st_size}",
+                                file=sys.stderr,
+                            )
+                        return 1
+            return 1
+        finally:
+            if not preserve_partial:
+                temporary.unlink(missing_ok=True)
+                partial_metadata.unlink(missing_ok=True)
     finally:
-        if not preserve_partial:
-            temporary.unlink(missing_ok=True)
-            partial_metadata.unlink(missing_ok=True)
+        release_download_lock(download_lock)
 
 
 if __name__ == "__main__":
