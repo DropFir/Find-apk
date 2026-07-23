@@ -1,0 +1,190 @@
+diff --git a/src/main/java/com/guoshengkai/cloudflarefaker/controller/ApiController.java b/src/main/java/com/guoshengkai/cloudflarefaker/controller/ApiController.java
+index 5d53879..4c6e906 100644
+--- a/src/main/java/com/guoshengkai/cloudflarefaker/controller/ApiController.java
++++ b/src/main/java/com/guoshengkai/cloudflarefaker/controller/ApiController.java
+@@ -3,6 +3,7 @@ package com.guoshengkai.cloudflarefaker.controller;
+ import com.guoshengkai.cloudflarefaker.entitys.FetchCommand;
+ import com.guoshengkai.cloudflarefaker.entitys.JavascriptCommand;
+ import com.guoshengkai.cloudflarefaker.websocket.MessageBody;
++import com.guoshengkai.cloudflarefaker.websocket.ResponseManager;
+ import com.guoshengkai.cloudflarefaker.websocket.center.RegisteredSessionManager;
+ import org.springframework.http.codec.ServerSentEvent;
+ import org.springframework.web.bind.annotation.PostMapping;
+@@ -29,6 +30,7 @@ public class ApiController {
+         String taskId = "task-" + UUID.randomUUID().toString().replace("-", "");
+         command.setStream(false);
+         return RegisteredSessionManager.getClientAndExecute(client -> {
++            ResponseManager.prepareResponse(taskId, 60000);
+             // 发送给Websocket
+             client.getMessageSender().sendMessage(MessageBody
+                     .create("fetch-command").append("taskId", taskId).append("data", command));
+@@ -49,6 +51,7 @@ public class ApiController {
+         Flux<ServerSentEvent<String>> dataFlux = Flux.create(emitter -> {
+             Thread.startVirtualThread(() -> {
+                 RegisteredSessionManager.getClientAndExecute(client -> {
++                    ResponseManager.prepareResponse(taskId, 120000);
+                     // 发送给Websocket
+                     client.getMessageSender().sendMessage(MessageBody
+                             .create("fetch-command").append("taskId", taskId).append("data", command));
+@@ -88,6 +91,7 @@ public class ApiController {
+     public Object executeScript(@RequestBody JavascriptCommand command) {
+         String taskId = "task-js-" + UUID.randomUUID().toString().replace("-", "");
+         return RegisteredSessionManager.getClientAndExecute(client -> {
++            ResponseManager.prepareResponse(taskId, 60000);
+             // 发送给Websocket
+             client.getMessageSender().sendMessage(MessageBody
+                     .create("execute-script")
+@@ -106,6 +110,7 @@ public class ApiController {
+         String taskId = "task-js-" + UUID.randomUUID().toString().replace("-", "");
+         command.setType("LOAD_HTML");
+         return RegisteredSessionManager.getClientAndExecute(client -> {
++            ResponseManager.prepareResponse(taskId, 60000);
+             // 发送给Websocket
+             client.getMessageSender().sendMessage(MessageBody
+                     .create("execute-script").append("taskId", taskId).append("data", command));
+diff --git a/src/main/java/com/guoshengkai/cloudflarefaker/robot/CloudflareRobotManager.java b/src/main/java/com/guoshengkai/cloudflarefaker/robot/CloudflareRobotManager.java
+index 5769146..48c9d34 100644
+--- a/src/main/java/com/guoshengkai/cloudflarefaker/robot/CloudflareRobotManager.java
++++ b/src/main/java/com/guoshengkai/cloudflarefaker/robot/CloudflareRobotManager.java
+@@ -3,6 +3,7 @@ package com.guoshengkai.cloudflarefaker.robot;
+ import com.guoshengkai.cloudflarefaker.robot.screen.Position;
+ import com.guoshengkai.cloudflarefaker.robot.screen.ScreenInfo;
+ import com.guoshengkai.cloudflarefaker.utils.FileUtil;
++import com.guoshengkai.cloudflarefaker.websocket.ResponseManager;
+ import com.guoshengkai.cloudflarefaker.websocket.WebSocketMessageSender;
+ import jakarta.annotation.PostConstruct;
+ import jakarta.annotation.PreDestroy;
+@@ -26,6 +27,10 @@ public class CloudflareRobotManager {
+         Thread.startVirtualThread(() -> {
+             while (!stop) {
+                 try {
++                    if (!ResponseManager.hasPendingResponses()) {
++                        Thread.sleep(500);
++                        continue;
++                    }
+                     List<ScreenInfo> allScreenInfo = robot.getAllScreenInfo();
+                     for (ScreenInfo screenInfo : allScreenInfo) {
+                         Position imgInScreen = screenInfo.findImgInScreen(FileUtil
+@@ -39,6 +44,15 @@ public class CloudflareRobotManager {
+                 } catch (Exception e) {
+                     log.error(e.getMessage());
+                 }
++                try {
++                    // A continuous full-screen OpenCV scan consumes an entire
++                    // CPU core even while no challenge is visible. A one-second
++                    // interval remains responsive within the challenge budget.
++                    Thread.sleep(1000);
++                } catch (InterruptedException e) {
++                    Thread.currentThread().interrupt();
++                    return;
++                }
+             }
+         });
+     }
+diff --git a/src/main/java/com/guoshengkai/cloudflarefaker/websocket/ResponseManager.java b/src/main/java/com/guoshengkai/cloudflarefaker/websocket/ResponseManager.java
+index e17ae31..f0e7f11 100644
+--- a/src/main/java/com/guoshengkai/cloudflarefaker/websocket/ResponseManager.java
++++ b/src/main/java/com/guoshengkai/cloudflarefaker/websocket/ResponseManager.java
+@@ -13,7 +13,27 @@ import java.util.function.Function;
+ 
+ public class ResponseManager {
+ 
+-    private static Map<String, TaskResponse> responseMap = new ConcurrentHashMap<>();
++    private static final Map<String, TaskResponse> responseMap = new ConcurrentHashMap<>();
++
++    /**
++     * Register the response slot before a command is sent over WebSocket.
++     *
++     * Without this, a fast Chrome response can arrive before getTaskResponse()
++     * creates its slot and the response is silently discarded.
++     */
++    public static void prepareResponse(String taskId, int timeout) {
++        responseMap.computeIfAbsent(taskId, key -> {
++            TaskResponse taskResponse = new TaskResponse();
++            taskResponse.setTimeout(timeout);
++            taskResponse.setStartTimeout(timeout);
++            taskResponse.setCompleted(false);
++            return taskResponse;
++        });
++    }
++
++    public static boolean hasPendingResponses() {
++        return !responseMap.isEmpty();
++    }
+ 
+ 
+     /**
+@@ -23,13 +43,8 @@ public class ResponseManager {
+      * @return 响应对象
+      */
+     public static Object getTaskResponse(String taskId, int i) {
++        prepareResponse(taskId, i);
+         TaskResponse taskResponse = responseMap.get(taskId);
+-        if (taskResponse == null) {
+-            taskResponse = new TaskResponse();
+-            taskResponse.setTimeout(i);
+-            taskResponse.setCompleted(false);
+-            responseMap.put(taskId, taskResponse);
+-        }
+         long startTime = System.currentTimeMillis();
+         long timeout = taskResponse.getTimeout();
+         while (!taskResponse.isCompleted()) {
+@@ -50,14 +65,9 @@ public class ResponseManager {
+     }
+ 
+     public static void getTaskResponseStream(String taskId, int startTimeout, int completedTimeout, Consumer<String> callback) {
++        prepareResponse(taskId, completedTimeout);
+         TaskResponse taskResponse = responseMap.get(taskId);
+-        if (taskResponse == null) {
+-            taskResponse = new TaskResponse();
+-            taskResponse.setTimeout(completedTimeout);
+-            taskResponse.setStartTimeout(startTimeout);
+-            taskResponse.setCompleted(false);
+-            responseMap.put(taskId, taskResponse);
+-        }
++        taskResponse.setStartTimeout(startTimeout);
+         long startTime = System.currentTimeMillis();
+         long startTimeoutTime = taskResponse.getStartTimeout();
+         long timeout = taskResponse.getTimeout();
+@@ -96,14 +106,14 @@ public class ResponseManager {
+ 
+     public static class TaskResponse {
+         private WebSocketSession session;
+-        private Object response;
++        private volatile Object response;
+         /**
+          * 开始接收Response的时间
+          */
+-        private long startTime;
+-        private long timeout;
+-        private long startTimeout;
+-        private boolean completed;
++        private volatile long startTime;
++        private volatile long timeout;
++        private volatile long startTimeout;
++        private volatile boolean completed;
+         private List<Object> responseStream = new java.util.LinkedList<>();
+ 
+         public WebSocketSession getSession() {
+diff --git a/src/main/java/com/guoshengkai/cloudflarefaker/websocket/controller/TaskController.java b/src/main/java/com/guoshengkai/cloudflarefaker/websocket/controller/TaskController.java
+index 61a36bd..c41bd3d 100644
+--- a/src/main/java/com/guoshengkai/cloudflarefaker/websocket/controller/TaskController.java
++++ b/src/main/java/com/guoshengkai/cloudflarefaker/websocket/controller/TaskController.java
+@@ -12,10 +12,15 @@ public class TaskController {
+     public void taskResponse(JSONObject json){
+         String taskId = json.getString("taskId");
+         JSONObject data = json.getJSONObject("data");
+-        if ("stream".equals(data.getString("type"))){
++        if (data == null) {
++            ResponseManager.completeResponse(taskId, json);
++        } else if ("stream".equals(data.getString("type"))){
+             ResponseManager.completeResponseStream(taskId, data.get("data"));
+         }else{
+-            ResponseManager.completeResponse(taskId, data.get("data"));
++            // Preserve the complete response envelope. Error responses do not
++            // have a top-level "data" field; extracting only data.get("data")
++            // turned every extension failure into an empty HTTP 200 response.
++            ResponseManager.completeResponse(taskId, data);
+         }
+     }
+ 

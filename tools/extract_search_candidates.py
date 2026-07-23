@@ -10,6 +10,7 @@ import socket
 from urllib.error import URLError
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
+from cloudflare_faker_client import CloudflareFakerError, fetch_rendered_html
 from extract_download_link import CHALLENGE_MARKERS, fetch_page
 
 
@@ -120,6 +121,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("url", help="Configured public source search URL")
     parser.add_argument("--package-name", required=True, help="Confirmed Android package name")
     parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument(
+        "--cloudflare-faker",
+        action="store_true",
+        help="Render a confirmed Cloudflare-blocked search page through local Chrome",
+    )
+    parser.add_argument(
+        "--faker-timeout",
+        type=float,
+        default=45.0,
+        help="Cloudflare-Faker render timeout; independent from the normal page timeout",
+    )
     return parser.parse_args()
 
 
@@ -127,6 +139,8 @@ def main() -> int:
     args = parse_args()
     if args.timeout <= 0 or args.timeout > 60:
         raise SystemExit("--timeout must be greater than 0 and no more than 60")
+    if args.faker_timeout <= 0 or args.faker_timeout > 45:
+        raise SystemExit("--faker-timeout must be greater than 0 and no more than 45")
     try:
         page = fetch_page(args.url, args.timeout)
         analysis = analyze_search_html(
@@ -136,12 +150,33 @@ def main() -> int:
             page.status,
             args.package_name,
         )
-    except (URLError, socket.timeout, TimeoutError, ConnectionError, OSError, ValueError) as error:
+        transport = "http"
+        if args.cloudflare_faker and analysis.classification == "cloudflare_challenge":
+            body = fetch_rendered_html(args.url, args.faker_timeout)
+            page = type(page)(200, args.url, "text/html", body)
+            analysis = analyze_search_html(
+                page.body,
+                args.url,
+                page.final_url,
+                page.status,
+                args.package_name,
+            )
+            transport = "cloudflare_faker"
+    except (
+        CloudflareFakerError,
+        URLError,
+        socket.timeout,
+        TimeoutError,
+        ConnectionError,
+        OSError,
+        ValueError,
+    ) as error:
         print("classification=network_error")
         print(f"error={type(error).__name__}: {error}")
         return 1
 
     print(f"classification={analysis.classification}")
+    print(f"transport={transport}")
     print(f"status={page.status}")
     print(f"search_url={args.url}")
     print(f"final_url={page.final_url}")

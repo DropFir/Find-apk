@@ -53,6 +53,47 @@ class BuildSourceSearchesTests(unittest.TestCase):
         )
         self.assertEqual({item["source"] for item in searches}, {"APKPure", "CNET"})
 
+    def test_appends_enabled_public_downloader_for_confirmed_package(self) -> None:
+        config = {
+            "preferredSources": [],
+            "publicDownloaderFallbacks": [
+                {
+                    "name": "MI9 APK Downloader",
+                    "entryUrl": "https://mi9.com/apk-downloader/",
+                    "enabled": True,
+                }
+            ],
+        }
+
+        searches = build_searches(config, "Example", "com.example.app")
+
+        self.assertEqual(
+            searches,
+            [
+                {
+                    "source": "MI9 APK Downloader",
+                    "term_type": "package",
+                    "method": "browser_generator",
+                    "target": "https://mi9.com/apk-downloader/",
+                    "fallback_target": "",
+                }
+            ],
+        )
+
+    def test_does_not_append_public_downloader_without_confirmed_package(self) -> None:
+        config = {
+            "preferredSources": [],
+            "publicDownloaderFallbacks": [
+                {
+                    "name": "MI9 APK Downloader",
+                    "entryUrl": "https://mi9.com/apk-downloader/",
+                    "enabled": True,
+                }
+            ],
+        }
+
+        self.assertEqual(build_searches(config, "Example"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

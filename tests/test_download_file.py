@@ -211,6 +211,26 @@ class DownloadFileTests(unittest.TestCase):
                     "application/vnd.android.package-archive",
                 )
 
+    def test_accepts_valid_base_apk_as_explicit_split_component(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "base.apk"
+            output.write_bytes(
+                package_bytes(
+                    {
+                        "AndroidManifest.xml": b"manifest",
+                        "classes.dex": b"com/unity3d/player/UnityPlayer",
+                        "res/xml/splits0.xml": b"config.arm64_v8a",
+                    }
+                )
+            )
+
+            validate_download(
+                output,
+                ".apk",
+                "application/vnd.android.package-archive",
+                allow_split_component=True,
+            )
+
     def test_accepts_native_game_engine_apk_when_library_is_embedded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "universal.apk"

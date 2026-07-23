@@ -72,6 +72,23 @@ def build_searches(
                         "fallback_target": fallback_target,
                     }
                 )
+
+    if package_name:
+        for source in config.get("publicDownloaderFallbacks", []):
+            if not isinstance(source, dict) or not source.get("enabled", False):
+                continue
+            entry_url = str(source.get("entryUrl", ""))
+            if not entry_url:
+                continue
+            searches.append(
+                {
+                    "source": str(source.get("name", "unnamed")),
+                    "term_type": "package",
+                    "method": "browser_generator",
+                    "target": entry_url,
+                    "fallback_target": "",
+                }
+            )
     return searches
 
 

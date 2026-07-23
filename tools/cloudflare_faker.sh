@@ -15,6 +15,7 @@ faker_java_home="$faker_runtime/jdk24/Contents/Home"
 faker_java="$faker_java_home/bin/java"
 faker_jar="$faker_project/target/Cloudflare-Faker-0.0.1-SNAPSHOT.jar"
 faker_extension="$faker_project/cloudflare_monitor_chrome_plugin"
+faker_patch="$faker_script_dir/cloudflare_faker_macos.patch"
 faker_pid_file="$faker_runtime/cloudflare-faker.pid"
 faker_log_file="$faker_runtime/cloudflare-faker.launch.log"
 faker_error_log="$faker_runtime/cloudflare-faker.launch.err"
@@ -106,7 +107,21 @@ faker_check() {
             return 4
             ;;
         *)
-            echo "Cloudflare-Faker Chrome extension is connected"
+            faker_health_response=$(curl -fsS --max-time 10 \
+                -H 'Content-Type: application/json' \
+                -X POST "http://$faker_address:$faker_port/api/remote-html" \
+                --data-binary '{"pageUrl":"http://127.0.0.1:8080/","script":"","type":"LOAD_HTML"}' \
+                2>/dev/null || true)
+            case "$faker_health_response" in
+                *'"html":'*'Cloudflare-Faker Dashboard'*)
+                    echo "Cloudflare-Faker Chrome extension is connected and executable"
+                    ;;
+                *)
+                    echo "Cloudflare-Faker Chrome extension is connected but failed the execution check" >&2
+                    printf '%s\n' "$faker_health_response" | cut -c 1-500 >&2
+                    return 5
+                    ;;
+            esac
             ;;
     esac
 }
@@ -124,6 +139,14 @@ faker_build() {
     if [ "$faker_commit" != "$faker_expected_commit" ]; then
         echo "Unexpected Cloudflare-Faker commit: $faker_commit" >&2
         echo "Expected: $faker_expected_commit" >&2
+        exit 1
+    fi
+    if git -C "$faker_project" apply --reverse --check "$faker_patch" >/dev/null 2>&1; then
+        :
+    elif git -C "$faker_project" apply --check "$faker_patch" >/dev/null 2>&1; then
+        git -C "$faker_project" apply "$faker_patch"
+    else
+        echo "Cloudflare-Faker local compatibility patch cannot be applied cleanly" >&2
         exit 1
     fi
     JAVA_HOME="$faker_java_home" PATH="$faker_java_home/bin:$PATH" \

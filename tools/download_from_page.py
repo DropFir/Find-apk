@@ -14,6 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
+from cloudflare_faker_client import CloudflareFakerError, fetch_rendered_html
 from extract_download_link import (
     VERSION_POLICIES,
     Analysis,
@@ -79,6 +80,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--page-timeout", type=float, default=20.0)
     parser.add_argument("--download-timeout", type=float, default=20.0)
     parser.add_argument("--retries", type=int, choices=(0, 1), default=1)
+    parser.add_argument(
+        "--cloudflare-faker",
+        action="store_true",
+        help="Render a confirmed Cloudflare/browser-blocked page through local Chrome",
+    )
+    parser.add_argument(
+        "--faker-timeout",
+        type=float,
+        default=45.0,
+        help="Cloudflare-Faker render timeout; independent from the normal page timeout",
+    )
     return parser.parse_args()
 
 
@@ -345,7 +357,14 @@ def resolve_download_page(
                 detected_version,
             )
             final_url = apkmirror_final_download_url(page.body, page.final_url)
-            if final_url is not None and analysis.classification == "no_download_link":
+            # APKMirror's keyed intermediate page often omits the package name
+            # even though the preceding exact variant page already established
+            # it.  Do not discard its vetted download.php link solely for that
+            # intermediate-page omission.
+            if final_url is not None and analysis.classification in {
+                "no_download_link",
+                "package_mismatch",
+            }:
                 analysis = Analysis("download_link", [final_url], False)
     return page, analysis, transition_url
 
@@ -354,6 +373,8 @@ def main() -> int:
     args = parse_args()
     validate_timeout(args.page_timeout, "--page-timeout")
     validate_timeout(args.download_timeout, "--download-timeout")
+    if args.faker_timeout <= 0 or args.faker_timeout > 45:
+        raise SystemExit("--faker-timeout must be greater than 0 and no more than 45")
 
     try:
         page, analysis, transition_url = resolve_download_page(
@@ -364,13 +385,53 @@ def main() -> int:
             args.version_policy,
             args.output.suffix.lower(),
         )
-    except (URLError, socket.timeout, TimeoutError, ConnectionError, OSError, ValueError) as error:
+        faker_used = False
+        if args.cloudflare_faker and analysis.classification in {
+            "browser_required",
+            "cloudflare_challenge",
+        }:
+            faker_url = (
+                transition_url
+                or apkpure_download_page_url(page.final_url, args.package_name)
+                or page.final_url
+            )
+            rendered_html = fetch_rendered_html(
+                faker_url,
+                args.faker_timeout,
+            )
+            detected_version = analysis.detected_version
+            page = PageResult(200, faker_url, "text/html", rendered_html)
+            analysis = preserve_detected_version(
+                analyze_html(
+                    page.body,
+                    page.final_url,
+                    status=page.status,
+                    expected_package=args.package_name,
+                    expected_version=args.version,
+                    version_policy=args.version_policy,
+                ),
+                detected_version,
+            )
+            transition_url = faker_url
+            faker_used = True
+    except (
+        CloudflareFakerError,
+        URLError,
+        socket.timeout,
+        TimeoutError,
+        ConnectionError,
+        OSError,
+        ValueError,
+    ) as error:
         print("classification=network_error")
         print(f"error={type(error).__name__}: {error}")
         print("pipeline_result=page_fetch_failed")
         return 1
 
-    if transition_url is not None:
+    if faker_used:
+        print("transition=cloudflare_faker")
+        print(f"transition_page_url={transition_url}")
+    elif transition_url is not None:
         if is_apkmirror_url(transition_url):
             transition = "apkmirror_download_page"
         elif is_apkpure_cdn_url(transition_url):

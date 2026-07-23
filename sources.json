@@ -57,6 +57,11 @@
     "skipPaidAppsBeforeMirrorSearch": true,
     "onCloudflareChallenge": "externalQueryThenRealChromeThenCloudflareFaker",
     "automaticBrowserFallback": true,
+    "reuseSingleBrowserWorkTab": true,
+    "maximumAgentCreatedTaskTabs": 2,
+    "closeAgentCreatedTabsAfterUse": true,
+    "neverClosePreexistingUserTabs": true,
+    "reconnectBrowserOnceAfterDisconnect": true,
     "batchIndependentQueries": true,
     "stopAfterFirstCurrentPackage": true,
     "oldVersionAction": "downloadHighestTrustedAvailableVersion"
@@ -305,6 +310,17 @@
       "download_failed"
     ]
   },
+  "browserSessionPolicy": {
+    "reuseSingleWorkTab": true,
+    "maximumAgentCreatedTaskTabs": 2,
+    "closeStaleAgentCreatedTabsBeforeOpeningAnother": true,
+    "closeAgentCreatedTabsAtBatchEnd": true,
+    "neverClosePreexistingUserTabs": true,
+    "reconnectOnceAfterExtensionDisconnect": true,
+    "openAdditionalTabsWhileDisconnected": false,
+    "askForRoutinePublicPageFallback": false,
+    "interactiveChallengeAction": "continueNextSourceWithoutRequestingManualControl"
+  },
   "preferredSources": [
     {
       "name": "APKPure",
@@ -339,6 +355,25 @@
       "baseUrl": "https://download.cnet.com",
       "searchMode": "externalSiteQuery",
       "homepageRequired": false,
+      "enabled": true
+    }
+  ],
+  "publicDownloaderFallbacks": [
+    {
+      "name": "MI9 APK Downloader",
+      "baseUrl": "https://mi9.com",
+      "entryUrl": "https://mi9.com/apk-downloader/",
+      "method": "browser_generator",
+      "input": "confirmedPackageOrGooglePlayUrl",
+      "onlyAfterPreferredSourcesExhausted": true,
+      "oneGenerationPerPackagePerRound": true,
+      "requireExactTitleDeveloperPackageAndVersion": true,
+      "visibleSplitLinksHost": "downloads.androidcontents.com",
+      "collectEveryVisibleApkComponent": true,
+      "preferredOutputFormat": "XAPK",
+      "assembleTool": "tools/download_split_archive.py",
+      "clickBlockedBundleButton": false,
+      "reuseSingleBrowserWorkTab": true,
       "enabled": true
     }
   ],

@@ -104,6 +104,19 @@ def validate_apk_split_completeness(path: Path) -> None:
         raise ValueError("download is not a valid ZIP-based Android package") from error
 
 
+def validate_apk_component(path: Path) -> None:
+    """Validate one APK component without requiring it to be standalone."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            bad_entry = archive.testzip()
+            if bad_entry is not None:
+                raise ValueError(
+                    f"Android package failed ZIP/CRC validation: {bad_entry}"
+                )
+    except zipfile.BadZipFile as error:
+        raise ValueError("download is not a valid ZIP-based Android package") from error
+
+
 def inspect_nested_apk(
     outer_archive: zipfile.ZipFile, entry_name: str
 ) -> tuple[bool, bool, bool]:
@@ -206,6 +219,14 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Number of retries after a network or server error (default: 1)",
     )
+    parser.add_argument(
+        "--split-component",
+        action="store_true",
+        help=(
+            "Validate an APK as one component of a split archive. "
+            "Only tools/download_split_archive.py should normally use this."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -247,7 +268,13 @@ def release_download_lock(lock: Path) -> None:
         lock.unlink(missing_ok=True)
 
 
-def validate_download(path: Path, suffix: str, content_type: str) -> None:
+def validate_download(
+    path: Path,
+    suffix: str,
+    content_type: str,
+    *,
+    allow_split_component: bool = False,
+) -> None:
     with path.open("rb") as downloaded:
         prefix = downloaded.read(INSPECT_SIZE)
 
@@ -261,7 +288,10 @@ def validate_download(path: Path, suffix: str, content_type: str) -> None:
     if suffix in PACKAGE_SUFFIXES and not prefix.startswith(ZIP_SIGNATURES):
         raise ValueError("download is not a ZIP-based Android package")
     if suffix == ".apk":
-        validate_apk_split_completeness(path)
+        if allow_split_component:
+            validate_apk_component(path)
+        else:
+            validate_apk_split_completeness(path)
     elif suffix in {".xapk", ".apkm", ".apks"}:
         validate_split_package_completeness(path)
     if suffix == ".webp" and not (
@@ -471,7 +501,12 @@ def main() -> int:
                             args.timeout,
                             output.suffix.lower(),
                         )
-                    validate_download(temporary, output.suffix.lower(), content_type)
+                    validate_download(
+                        temporary,
+                        output.suffix.lower(),
+                        content_type,
+                        allow_split_component=args.split_component,
+                    )
                     os.replace(temporary, output)
                     partial_metadata.unlink(missing_ok=True)
                     print(f"output={output.as_posix()}")
