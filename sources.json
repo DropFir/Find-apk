@@ -147,9 +147,16 @@
     "allKeywordsRequireTerminalResult": true,
     "terminalResults": [
       "package_saved",
-      "paid_app_skipped",
-      "download_note_saved_after_exhaustion"
+      "paid_app_skipped"
     ],
+    "downloadNoteIsProgressCheckpointOnly": true,
+    "downloadNoteCannotEndRequestedDownload": true,
+    "singleKeywordCannotIdleBeforeTerminalResult": true,
+    "revisitUnresolvedQueueBeforeFinal": true,
+    "failedSearchRoundDoesNotCompleteKeyword": true,
+    "continueAcrossSearchRoundsUntilPackageOrPaid": true,
+    "useWaitOrContinuationMechanismWhenAllCurrentPathsAreTransientlyBlocked": true,
+    "finalFailureForbiddenUnlessUserAllowsNoteOrCancels": true,
     "orderedRequestPreservesOutputOrderOnly": true,
     "orderedRequestStillUsesPhasedBatchExecution": true,
     "mustNotIdleWithRemainingKeywords": true
