@@ -39,7 +39,7 @@
   对 `.apk` 还会执行轻量 split 完整性检查：优先读取二进制 `AndroidManifest.xml`；只要声明了 `requiredSplitTypes` 或 `com.android.vending.splits.required=true`，就把它判为不能独立安装的 App Bundle base APK，拒绝保存并要求改用同版本 XAPK/APKM/APKS。即使 Manifest 没有明确声明，存在 `splits*.xml`、DEX 明确引用 Unity/Cocos/Unreal/Godot 原生引擎、但包内没有任何 `lib/<ABI>/*.so` 时也同样拒绝。
   对 XAPK/APKM/APKS 会执行外层完整 ZIP/CRC 检查、确认至少包含一个 APK，并按照 base APK Manifest 的 `requiredSplitTypes` 确认 ABI、屏幕密度等必需配置分包实际存在；在能够识别原生引擎 base APK 时还要确认存在实际含 `.so` 的 ABI split。重启任务或复用目录内现有文件前，必须运行 `tools/validate_package.py <local-package>`；`invalid_package` 不能作为已有成功结果。
   每个输出路径还会创建进程锁；同一关键词、同一目标文件已有下载进程时，其他 Agent 必须复用其结果或等待，禁止同时写入、续传或重命名同一个隐藏分片。
-- 拆分包合成：MI9 结果页已经显示 base APK 和全部配置 split 的公开直链时，调用 `tools/download_split_archive.py` 下载每个可见组件、生成标准 `manifest.json` 并原子保存为 XAPK。工具会限制 CDN 域名与包名路径，逐个执行 ZIP/CRC 检查，并在合成后复用完整拆分包校验。不得只保存 base APK，也不得为点击被浏览器拦截的 `Get XAPK` 而要求用户接管。
+- 拆分包合成：MI9 结果页或 Aptoide `app/get?aab=true` 公开元数据已经显示 base APK 和全部配置 split 的公开直链时，调用 `tools/download_split_archive.py` 下载每个可见组件、生成标准 `manifest.json` 并原子保存为 XAPK。工具只接受 `downloads.androidcontents.com` 与 `pool.apk.aptoide.com`，并校验 CDN 域名、包名路径、每个组件的 ZIP/CRC 以及合成后的完整拆分包。不得只保存 base APK，也不得为点击被浏览器拦截的 `Get XAPK` 而要求用户接管。
 - 受阻页面探测：优先调用仓库内的 `tools/probe_url.py`，用完整浏览器导航请求头区分 Cloudflare、资源删除、站点故障和网页工具自身的打开失败。网页搜索/打开工具报“无法打开”、安全 URL 错误、后端网络错误或空响应时，必须用它复核原始搜索 URL；工具错误不等于源站无结果。
 - Cloudflare 后备：公开搜索页、应用详情页或下载页确认出现 Cloudflare 挑战时，优先复用用户当前的真实 Chrome 会话；无法通过时再使用 `onlyGuo/Cloudflare-Faker`。不得仅因 Cloudflare 直接放弃该来源。
 - WEBP 图像处理：优先调用仓库内的 `tools/convert_icon.py`。它使用 Pillow 原尺寸、无损转换并验证输出。

@@ -39,6 +39,24 @@ class DownloadSplitArchiveTests(unittest.TestCase):
             "config.arm64_v8a.apk",
         )
 
+    def test_accepts_expected_aptoide_component_url(self) -> None:
+        url = (
+            "https://pool.apk.aptoide.com/apps/"
+            "io-settlemate-app-385-75706648-abc-config-arm64-v8a.apk"
+        )
+        self.assertEqual(
+            component_filename(url, "io.settlemate.app"),
+            "config.arm64_v8a.apk",
+        )
+
+    def test_rejects_aptoide_component_for_another_package(self) -> None:
+        with self.assertRaisesRegex(ValueError, "expected package"):
+            component_filename(
+                "https://pool.apk.aptoide.com/apps/"
+                "com-other-app-385-75706648-abc-config-arm64-v8a.apk",
+                "io.settlemate.app",
+            )
+
     def test_rejects_unrelated_host_or_package(self) -> None:
         with self.assertRaisesRegex(ValueError, "allowed HTTPS"):
             component_filename(

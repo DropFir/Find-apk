@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download visible MI9 split APK links and assemble one validated XAPK."""
+"""Download trusted public split APK links and assemble one validated XAPK."""
 
 from __future__ import annotations
 
@@ -23,13 +23,16 @@ from download_file import (
 
 TOOLS_DIR = Path(__file__).resolve().parent
 DOWNLOAD_TOOL = TOOLS_DIR / "download_file.py"
-DEFAULT_ALLOWED_HOSTS = {"downloads.androidcontents.com"}
+DEFAULT_ALLOWED_HOSTS = {
+    "downloads.androidcontents.com",
+    "pool.apk.aptoide.com",
+}
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Download a confirmed MI9 result page's visible base/split APK links "
+            "Download confirmed MI9 or Aptoide base/split APK links "
             "and atomically assemble a validated XAPK."
         )
     )
@@ -41,7 +44,7 @@ def parse_args() -> argparse.Namespace:
         "--split-url",
         action="append",
         default=[],
-        help="One visible MI9 APK component URL; repeat for every base/config APK",
+        help="One trusted APK component URL; repeat for every base/config APK",
     )
     parser.add_argument("--version-code", default="0")
     parser.add_argument("--min-sdk-version", default="0")
@@ -56,14 +59,42 @@ def component_filename(
     expected_package: str,
     allowed_hosts: set[str] | None = None,
 ) -> str:
-    """Return a safe APK basename from one expected MI9 component URL."""
+    """Return a safe APK basename from one trusted component URL."""
     hosts = allowed_hosts or DEFAULT_ALLOWED_HOSTS
     parsed = urlparse(url)
     hostname = (parsed.hostname or "").casefold()
     if parsed.scheme.casefold() != "https" or hostname not in hosts:
         raise ValueError("split URL is not on an allowed HTTPS download host")
 
-    path_parts = [unquote(part) for part in PurePosixPath(parsed.path).parts if part != "/"]
+    path_parts = [
+        unquote(part) for part in PurePosixPath(parsed.path).parts if part != "/"
+    ]
+    if hostname == "pool.apk.aptoide.com":
+        if not path_parts:
+            raise ValueError("Aptoide split URL has no APK filename")
+        filename = Path(path_parts[-1]).name
+        package_slug = expected_package.replace(".", "-").casefold()
+        if (
+            filename != path_parts[-1]
+            or not filename.casefold().endswith(".apk")
+            or not filename.casefold().startswith(f"{package_slug}-")
+        ):
+            raise ValueError("Aptoide split URL path does not match the expected package")
+        config_marker = "-config-"
+        marker_index = filename.casefold().rfind(config_marker)
+        if marker_index >= 0:
+            config_name = filename[marker_index + len(config_marker) : -4]
+            for abi_name in (
+                "arm64-v8a",
+                "armeabi-v7a",
+                "x86-64",
+            ):
+                if config_name.casefold() == abi_name:
+                    config_name = abi_name.replace("-", "_")
+                    break
+            return f"config.{config_name}.apk"
+        return filename
+
     if not path_parts or path_parts[0].casefold() != expected_package.casefold():
         raise ValueError("split URL path does not match the expected package")
 
