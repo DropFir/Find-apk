@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 from pathlib import Path
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 from download_file import (  # noqa: E402
     acquire_download_lock,
     effective_download_timeout,
+    inspect_manifest_split_info,
     release_download_lock,
     validate_download,
 )
@@ -29,6 +31,98 @@ def package_bytes(entries: dict[str, bytes]) -> bytes:
         for name, content in entries.items():
             archive.writestr(name, content)
     return output.getvalue()
+
+
+def binary_split_manifest() -> bytes:
+    strings = [
+        "manifest",
+        "requiredSplitTypes",
+        "base__abi,base__density",
+        "meta-data",
+        "name",
+        "com.android.vending.splits.required",
+        "value",
+    ]
+    encoded: list[bytes] = []
+    offsets: list[int] = []
+    position = 0
+    for value in strings:
+        raw = value.encode("utf-8")
+        item = bytes((len(value), len(raw))) + raw + b"\x00"
+        offsets.append(position)
+        encoded.append(item)
+        position += len(item)
+    string_data = b"".join(encoded)
+    string_data += b"\x00" * (-len(string_data) % 4)
+    strings_start = 28 + 4 * len(strings)
+    string_pool = (
+        struct.pack(
+            "<HHIIIIII",
+            0x0001,
+            28,
+            strings_start + len(string_data),
+            len(strings),
+            0,
+            0x100,
+            strings_start,
+            0,
+        )
+        + b"".join(struct.pack("<I", offset) for offset in offsets)
+        + string_data
+    )
+
+    def start_element(name_index: int, attributes: list[bytes]) -> bytes:
+        size = 36 + 20 * len(attributes)
+        return (
+            struct.pack("<HHIII", 0x0102, 16, size, 1, 0xFFFFFFFF)
+            + struct.pack(
+                "<IIHHHHHH",
+                0xFFFFFFFF,
+                name_index,
+                20,
+                20,
+                len(attributes),
+                0,
+                0,
+                0,
+            )
+            + b"".join(attributes)
+        )
+
+    def string_attribute(name_index: int, value_index: int) -> bytes:
+        return struct.pack(
+            "<IIIHBBI",
+            0xFFFFFFFF,
+            name_index,
+            value_index,
+            8,
+            0,
+            0x03,
+            value_index,
+        )
+
+    def boolean_attribute(name_index: int, value: bool) -> bytes:
+        return struct.pack(
+            "<IIIHBBI",
+            0xFFFFFFFF,
+            name_index,
+            0xFFFFFFFF,
+            8,
+            0,
+            0x12,
+            int(value),
+        )
+
+    manifest = start_element(0, [string_attribute(1, 2)])
+    metadata = start_element(
+        3,
+        [
+            string_attribute(4, 5),
+            boolean_attribute(6, True),
+        ],
+    )
+    body = string_pool + manifest + metadata
+    return struct.pack("<HHI", 0x0003, 8, 8 + len(body)) + body
 
 
 class RetryHandler(BaseHTTPRequestHandler):
@@ -74,6 +168,15 @@ class RetryHandler(BaseHTTPRequestHandler):
 
 
 class DownloadFileTests(unittest.TestCase):
+    def test_reads_binary_manifest_required_split_declarations(self) -> None:
+        split_info = inspect_manifest_split_info(binary_split_manifest())
+
+        self.assertEqual(
+            split_info.required_types,
+            frozenset({"base__abi", "base__density"}),
+        )
+        self.assertTrue(split_info.splits_required)
+
     def test_target_lock_rejects_concurrent_writer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "same-target.xapk"
@@ -210,6 +313,54 @@ class DownloadFileTests(unittest.TestCase):
                     ".apk",
                     "application/vnd.android.package-archive",
                 )
+
+    def test_rejects_base_apk_with_explicit_required_split_types(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "base.apk"
+            output.write_bytes(
+                package_bytes(
+                    {
+                        "AndroidManifest.xml": binary_split_manifest(),
+                        "classes.dex": b"pure-java-app",
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(
+                ValueError, "required ABI/density split"
+            ):
+                validate_download(
+                    output,
+                    ".apk",
+                    "application/vnd.android.package-archive",
+                )
+
+    def test_rejects_split_archive_missing_manifest_required_density(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "base.xapk"
+            output.write_bytes(
+                package_bytes(
+                    {
+                        "base.apk": package_bytes(
+                            {
+                                "AndroidManifest.xml": binary_split_manifest(),
+                                "classes.dex": b"pure-java-app",
+                            }
+                        ),
+                        "config.arm64_v8a.apk": package_bytes(
+                            {
+                                "AndroidManifest.xml": b"manifest",
+                                "lib/arm64-v8a/libapp.so": b"native",
+                            }
+                        ),
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(
+                ValueError, "manifest-required density split"
+            ):
+                validate_download(output, ".xapk", "application/octet-stream")
 
     def test_accepts_valid_base_apk_as_explicit_split_component(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

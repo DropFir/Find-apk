@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from http.client import HTTPException, IncompleteRead
 import os
 import re
@@ -49,6 +50,241 @@ ABI_SPLIT_PATTERN = re.compile(
     r"(?:^|[._-])(?:arm64[_-]?v8a|armeabi[_-]?v7a|armeabi|x86_64|x86)(?:[._-]|$)",
     re.IGNORECASE,
 )
+DENSITY_SPLIT_PATTERN = re.compile(
+    r"(?:^|[._-])(?:ldpi|mdpi|tvdpi|hdpi|xhdpi|xxhdpi|xxxhdpi|[1-9][0-9]{2,3}dpi)"
+    r"(?:[._-]|$)",
+    re.IGNORECASE,
+)
+ANDROID_BINARY_XML_TYPE = 0x0003
+STRING_POOL_TYPE = 0x0001
+START_ELEMENT_TYPE = 0x0102
+UTF8_STRING_POOL_FLAG = 0x00000100
+TYPE_STRING = 0x03
+TYPE_INT_BOOLEAN = 0x12
+NO_STRING_INDEX = 0xFFFFFFFF
+
+
+@dataclass(frozen=True)
+class ManifestSplitInfo:
+    """Split-delivery declarations read from AndroidManifest.xml."""
+
+    required_types: frozenset[str] = frozenset()
+    splits_required: bool = False
+    split_name: str | None = None
+
+    @property
+    def requires_components(self) -> bool:
+        return self.splits_required or bool(self.required_types)
+
+
+def _read_length8(data: bytes, offset: int) -> tuple[int, int]:
+    first = data[offset]
+    if first & 0x80:
+        return ((first & 0x7F) << 8) | data[offset + 1], offset + 2
+    return first, offset + 1
+
+
+def _read_length16(data: bytes, offset: int) -> tuple[int, int]:
+    first = int.from_bytes(data[offset : offset + 2], "little")
+    if first & 0x8000:
+        second = int.from_bytes(data[offset + 2 : offset + 4], "little")
+        return ((first & 0x7FFF) << 16) | second, offset + 4
+    return first, offset + 2
+
+
+def _parse_binary_xml_string_pool(data: bytes, offset: int) -> list[str]:
+    header_size = int.from_bytes(data[offset + 2 : offset + 4], "little")
+    chunk_size = int.from_bytes(data[offset + 4 : offset + 8], "little")
+    string_count = int.from_bytes(data[offset + 8 : offset + 12], "little")
+    flags = int.from_bytes(data[offset + 16 : offset + 20], "little")
+    strings_start = int.from_bytes(data[offset + 20 : offset + 24], "little")
+    if (
+        header_size < 28
+        or chunk_size < header_size
+        or offset + chunk_size > len(data)
+        or string_count > (chunk_size - header_size) // 4
+    ):
+        raise ValueError("invalid Android binary XML string pool")
+
+    utf8 = bool(flags & UTF8_STRING_POOL_FLAG)
+    strings: list[str] = []
+    offsets_start = offset + header_size
+    content_start = offset + strings_start
+    chunk_end = offset + chunk_size
+    for index in range(string_count):
+        relative = int.from_bytes(
+            data[offsets_start + index * 4 : offsets_start + index * 4 + 4],
+            "little",
+        )
+        position = content_start + relative
+        if position >= chunk_end:
+            raise ValueError("invalid Android binary XML string offset")
+        if utf8:
+            _, position = _read_length8(data, position)
+            byte_length, position = _read_length8(data, position)
+            end = position + byte_length
+            if end > chunk_end:
+                raise ValueError("truncated Android binary XML UTF-8 string")
+            strings.append(data[position:end].decode("utf-8", errors="replace"))
+        else:
+            char_length, position = _read_length16(data, position)
+            end = position + char_length * 2
+            if end > chunk_end:
+                raise ValueError("truncated Android binary XML UTF-16 string")
+            strings.append(data[position:end].decode("utf-16le", errors="replace"))
+    return strings
+
+
+def _string_at(strings: list[str], index: int) -> str | None:
+    if index == NO_STRING_INDEX:
+        return None
+    if 0 <= index < len(strings):
+        return strings[index]
+    raise ValueError("invalid Android binary XML string reference")
+
+
+def _parse_binary_manifest_attributes(
+    data: bytes,
+) -> list[tuple[str, dict[str, str | bool | int | None]]]:
+    if len(data) < 8:
+        return []
+    xml_type = int.from_bytes(data[0:2], "little")
+    xml_size = int.from_bytes(data[4:8], "little")
+    if xml_type != ANDROID_BINARY_XML_TYPE:
+        return []
+    if xml_size > len(data) or xml_size < 8:
+        raise ValueError("invalid Android binary XML document size")
+
+    strings: list[str] | None = None
+    elements: list[tuple[str, dict[str, str | bool | int | None]]] = []
+    offset = 8
+    while offset + 8 <= xml_size:
+        chunk_type = int.from_bytes(data[offset : offset + 2], "little")
+        header_size = int.from_bytes(data[offset + 2 : offset + 4], "little")
+        chunk_size = int.from_bytes(data[offset + 4 : offset + 8], "little")
+        if (
+            header_size < 8
+            or chunk_size < header_size
+            or offset + chunk_size > xml_size
+        ):
+            raise ValueError("invalid Android binary XML chunk")
+        if chunk_type == STRING_POOL_TYPE:
+            strings = _parse_binary_xml_string_pool(data, offset)
+        elif chunk_type == START_ELEMENT_TYPE:
+            if strings is None or header_size < 16 or chunk_size < header_size + 20:
+                raise ValueError("invalid Android binary XML start element")
+            extension = offset + header_size
+            element_name = _string_at(
+                strings,
+                int.from_bytes(data[extension + 4 : extension + 8], "little"),
+            )
+            attribute_start = int.from_bytes(
+                data[extension + 8 : extension + 10], "little"
+            )
+            attribute_size = int.from_bytes(
+                data[extension + 10 : extension + 12], "little"
+            )
+            attribute_count = int.from_bytes(
+                data[extension + 12 : extension + 14], "little"
+            )
+            if attribute_size < 20:
+                raise ValueError("invalid Android binary XML attribute size")
+            attributes: dict[str, str | bool | int | None] = {}
+            attribute_offset = extension + attribute_start
+            for attribute_index in range(attribute_count):
+                item = attribute_offset + attribute_index * attribute_size
+                if item + 20 > offset + chunk_size:
+                    raise ValueError("truncated Android binary XML attribute")
+                name = _string_at(
+                    strings, int.from_bytes(data[item + 4 : item + 8], "little")
+                )
+                raw_value = _string_at(
+                    strings, int.from_bytes(data[item + 8 : item + 12], "little")
+                )
+                data_type = data[item + 15]
+                typed_data = int.from_bytes(data[item + 16 : item + 20], "little")
+                if raw_value is not None:
+                    value: str | bool | int | None = raw_value
+                elif data_type == TYPE_STRING:
+                    value = _string_at(strings, typed_data)
+                elif data_type == TYPE_INT_BOOLEAN:
+                    value = bool(typed_data)
+                else:
+                    value = typed_data
+                if name is not None:
+                    attributes[name] = value
+            if element_name is not None:
+                elements.append((element_name, attributes))
+        offset += chunk_size
+    return elements
+
+
+def inspect_manifest_split_info(manifest: bytes) -> ManifestSplitInfo:
+    """Read explicit App Bundle split requirements without Android SDK tools."""
+    elements = _parse_binary_manifest_attributes(manifest)
+    if not elements and manifest.lstrip().startswith(b"<"):
+        import xml.etree.ElementTree as ElementTree
+
+        try:
+            root = ElementTree.fromstring(manifest)
+        except ElementTree.ParseError as error:
+            raise ValueError("invalid text AndroidManifest.xml") from error
+        elements = []
+        for element in root.iter():
+            tag = element.tag.rsplit("}", 1)[-1]
+            attributes = {
+                name.rsplit("}", 1)[-1]: value
+                for name, value in element.attrib.items()
+            }
+            elements.append((tag, attributes))
+
+    required_types: set[str] = set()
+    splits_required = False
+    split_name: str | None = None
+    for tag, attributes in elements:
+        if tag == "manifest":
+            raw_required = attributes.get("requiredSplitTypes")
+            if isinstance(raw_required, str):
+                required_types.update(
+                    item.strip()
+                    for item in re.split(r"[,;\s]+", raw_required)
+                    if item.strip()
+                )
+            raw_split_name = attributes.get("split")
+            if isinstance(raw_split_name, str) and raw_split_name.strip():
+                split_name = raw_split_name.strip()
+        elif (
+            tag in {"meta-data", "metadata"}
+            and attributes.get("name") == "com.android.vending.splits.required"
+        ):
+            value = attributes.get("value")
+            splits_required = value is True or (
+                isinstance(value, str) and value.casefold() == "true"
+            )
+    return ManifestSplitInfo(
+        required_types=frozenset(required_types),
+        splits_required=splits_required,
+        split_name=split_name,
+    )
+
+
+def inspect_apk_manifest(archive: zipfile.ZipFile) -> ManifestSplitInfo:
+    try:
+        manifest = archive.read("AndroidManifest.xml")
+    except KeyError as error:
+        raise ValueError("Android package is missing AndroidManifest.xml") from error
+    return inspect_manifest_split_info(manifest)
+
+
+def format_required_split_types(required_types: frozenset[str]) -> str:
+    labels: list[str] = []
+    if any("abi" in item.casefold() for item in required_types):
+        labels.append("ABI")
+    if any("density" in item.casefold() for item in required_types):
+        labels.append("density")
+    if not labels:
+        labels.extend(sorted(required_types))
+    return "/".join(labels) or "configuration"
 
 
 def archive_entry_contains_native_engine_marker(
@@ -88,6 +324,14 @@ def validate_apk_split_completeness(path: Path) -> None:
             bad_entry = archive.testzip()
             if bad_entry is not None:
                 raise ValueError(f"Android package failed ZIP/CRC validation: {bad_entry}")
+            split_info = inspect_apk_manifest(archive)
+            if split_info.requires_components:
+                required = format_required_split_types(split_info.required_types)
+                raise ValueError(
+                    "APK is a split-required App Bundle base APK missing its "
+                    f"required {required} split; download the matching "
+                    "XAPK/APKM/APKS instead"
+                )
             has_native_library, has_split_descriptor, requires_native_engine = (
                 inspect_apk_archive(archive)
             )
@@ -134,6 +378,18 @@ def inspect_nested_apk(
             return inspect_apk_archive(nested_archive)
 
 
+def inspect_nested_apk_manifest(
+    outer_archive: zipfile.ZipFile, entry_name: str
+) -> ManifestSplitInfo:
+    """Read one nested APK manifest without keeping another permanent copy."""
+    with tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024) as nested_file:
+        with outer_archive.open(entry_name) as source:
+            shutil.copyfileobj(source, nested_file, CHUNK_SIZE)
+        nested_file.seek(0)
+        with zipfile.ZipFile(nested_file) as nested_archive:
+            return inspect_apk_manifest(nested_archive)
+
+
 def select_base_apk_entry(apk_entries: list[str]) -> str | None:
     """Choose the most likely base APK while avoiding configuration splits."""
     for entry in apk_entries:
@@ -175,6 +431,41 @@ def validate_split_package_completeness(path: Path) -> None:
             base_entry = select_base_apk_entry(apk_entries)
             if base_entry is None:
                 return
+            base_manifest = inspect_nested_apk_manifest(outer_archive, base_entry)
+            component_labels: list[str] = []
+            for entry in apk_entries:
+                if entry == base_entry:
+                    continue
+                component_manifest = inspect_nested_apk_manifest(outer_archive, entry)
+                component_labels.append(Path(entry).stem)
+                if component_manifest.split_name:
+                    component_labels.append(component_manifest.split_name)
+
+            for required_type in sorted(base_manifest.required_types):
+                normalized = required_type.casefold()
+                if "abi" in normalized:
+                    present = any(
+                        ABI_SPLIT_PATTERN.search(label) for label in component_labels
+                    )
+                elif "density" in normalized:
+                    present = any(
+                        DENSITY_SPLIT_PATTERN.search(label)
+                        for label in component_labels
+                    )
+                else:
+                    present = bool(component_labels)
+                if not present:
+                    label = format_required_split_types(frozenset({required_type}))
+                    raise ValueError(
+                        "Android split package is missing its manifest-required "
+                        f"{label} split"
+                    )
+            if base_manifest.splits_required and len(apk_entries) == 1:
+                raise ValueError(
+                    "Android split package contains only a base APK but its "
+                    "manifest requires configuration splits"
+                )
+
             base_has_library, base_has_descriptor, base_requires_native = (
                 inspect_nested_apk(outer_archive, base_entry)
             )

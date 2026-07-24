@@ -316,6 +316,12 @@
     "closeStaleAgentCreatedTabsBeforeOpeningAnother": true,
     "closeAgentCreatedTabsAtBatchEnd": true,
     "neverClosePreexistingUserTabs": true,
+    "blockedDomains": [
+      "playafterdark.com",
+      "iccku.com"
+    ],
+    "closeBlockedDomainTabsImmediately": true,
+    "neverReadClickOrNavigateBlockedDomains": true,
     "reconnectOnceAfterExtensionDisconnect": true,
     "openAdditionalTabsWhileDisconnected": false,
     "askForRoutinePublicPageFallback": false,
