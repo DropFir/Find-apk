@@ -15,9 +15,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lan_share.browser_worker import (  # noqa: E402
+    active_display_bounds,
     BrowserDownloadStore,
     BrowserDownloadWorker,
     PersistentChromeBackend,
+    secondary_display_window,
 )
 
 
@@ -45,6 +47,7 @@ def main() -> int:
         STATE_ROOT / "browser-profile",
         STATE_ROOT / "browser-downloads" / "temporary",
         chrome_port=CHROME_PORT,
+        window_bounds=secondary_display_window(active_display_bounds()),
     )
     worker = BrowserDownloadWorker(
         store,

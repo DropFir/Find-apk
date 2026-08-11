@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import ctypes
 from dataclasses import asdict, dataclass
 import os
 from pathlib import Path
 import shutil
 import sqlite3
+import sys
 import threading
 import time
 from typing import Callable, Iterator
@@ -24,6 +26,85 @@ ACTIVE_TASK_STATUSES = ("pending", "navigating", "verifying", "downloading")
 CHROME_PATH = Path(
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 )
+
+
+@dataclass(frozen=True)
+class DisplayBounds:
+    identifier: int
+    x: int
+    y: int
+    width: int
+    height: int
+    is_main: bool = False
+
+
+def active_display_bounds() -> list[DisplayBounds]:
+    """Return the global bounds of active macOS displays."""
+    if sys.platform != "darwin":
+        return []
+
+    class CGPoint(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+
+    class CGSize(ctypes.Structure):
+        _fields_ = [("width", ctypes.c_double), ("height", ctypes.c_double)]
+
+    class CGRect(ctypes.Structure):
+        _fields_ = [("origin", CGPoint), ("size", CGSize)]
+
+    core_graphics = ctypes.CDLL(
+        "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
+    )
+    core_graphics.CGGetActiveDisplayList.argtypes = [
+        ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.POINTER(ctypes.c_uint32),
+    ]
+    core_graphics.CGGetActiveDisplayList.restype = ctypes.c_int32
+    core_graphics.CGMainDisplayID.restype = ctypes.c_uint32
+    core_graphics.CGDisplayBounds.argtypes = [ctypes.c_uint32]
+    core_graphics.CGDisplayBounds.restype = CGRect
+
+    identifiers = (ctypes.c_uint32 * 16)()
+    count = ctypes.c_uint32()
+    error = core_graphics.CGGetActiveDisplayList(
+        len(identifiers), identifiers, ctypes.byref(count)
+    )
+    if error:
+        return []
+    main_identifier = int(core_graphics.CGMainDisplayID())
+    displays = []
+    for index in range(count.value):
+        identifier = int(identifiers[index])
+        bounds = core_graphics.CGDisplayBounds(identifier)
+        displays.append(
+            DisplayBounds(
+                identifier=identifier,
+                x=round(bounds.origin.x),
+                y=round(bounds.origin.y),
+                width=round(bounds.size.width),
+                height=round(bounds.size.height),
+                is_main=identifier == main_identifier,
+            )
+        )
+    return displays
+
+
+def secondary_display_window(
+    displays: list[DisplayBounds], *, margin: int = 0
+) -> tuple[int, int, int, int] | None:
+    """Choose the largest non-main display and inset a Chrome window into it."""
+    secondary = [display for display in displays if not display.is_main]
+    if not secondary:
+        return None
+    target = max(secondary, key=lambda item: item.width * item.height)
+    inset = max(0, min(margin, target.width // 4, target.height // 4))
+    return (
+        target.x + inset,
+        target.y + inset,
+        max(320, target.width - inset * 2),
+        max(240, target.height - inset * 2),
+    )
 
 
 class BrowserWorkerError(RuntimeError):
@@ -408,17 +489,20 @@ class PersistentChromeBackend:
         *,
         chrome_port: int = 9223,
         chrome_path: Path = CHROME_PATH,
+        window_bounds: tuple[int, int, int, int] | None = None,
     ) -> None:
         self.profile_path = profile_path.resolve(strict=False)
         self.download_root = download_root.resolve(strict=False)
         self.chrome_port = chrome_port
         self.chrome_path = chrome_path
+        self.window_bounds = window_bounds
         self.browser = None
 
     def ensure_browser(self):
         if self.browser is not None:
             try:
                 _ = self.browser.latest_tab
+                self._place_browser_window()
                 return self.browser
             except Exception:
                 self.browser = None
@@ -439,9 +523,31 @@ class PersistentChromeBackend:
         )
         options.set_argument("--no-first-run")
         options.set_argument("--no-default-browser-check")
+        if self.window_bounds:
+            x, y, width, height = self.window_bounds
+            options.set_argument(f"--window-position={x},{y}")
+            options.set_argument(f"--window-size={width},{height}")
         self.browser = Chromium(options)
         self.browser.set.download_path(str(self.download_root))
+        self._place_browser_window()
         return self.browser
+
+    def _place_browser_window(self) -> None:
+        if self.browser is None or self.window_bounds is None:
+            return
+        x, y, width, height = self.window_bounds
+        tab = self.browser.latest_tab
+        window = tab._run_cdp("Browser.getWindowForTarget")
+        tab._run_cdp(
+            "Browser.setWindowBounds",
+            windowId=window["windowId"],
+            bounds={"windowState": "normal"},
+        )
+        tab._run_cdp(
+            "Browser.setWindowBounds",
+            windowId=window["windowId"],
+            bounds={"left": x, "top": y, "width": width, "height": height},
+        )
 
     def download(
         self,
@@ -572,6 +678,7 @@ class PersistentChromeBackend:
             return
         try:
             self.browser.latest_tab.get("about:blank", timeout=5, retry=0)
+            self._place_browser_window()
         except Exception:
             # A later task will reconnect to the fixed debugging port.
             self.browser = None

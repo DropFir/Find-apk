@@ -6,12 +6,14 @@ import time
 import unittest
 
 from lan_share.browser_worker import (
+    DisplayBounds,
     BrowserDownloadStore,
     BrowserDownloadWorker,
     BrowserWorkerError,
     PersistentChromeBackend,
     entry_page_url,
     package_suffix,
+    secondary_display_window,
 )
 
 
@@ -62,6 +64,21 @@ def wait_for_task(store: BrowserDownloadStore, task_id: int, timeout: float = 3)
 
 
 class BrowserWorkerTests(unittest.TestCase):
+    def test_places_browser_on_largest_secondary_display(self) -> None:
+        displays = [
+            DisplayBounds(3, 0, 0, 1920, 1080, is_main=True),
+            DisplayBounds(1, -1280, 0, 1280, 800),
+            DisplayBounds(2, 1920, 0, 1024, 768),
+        ]
+        self.assertEqual(
+            secondary_display_window(displays),
+            (-1280, 0, 1280, 800),
+        )
+
+    def test_leaves_window_alone_without_secondary_display(self) -> None:
+        displays = [DisplayBounds(3, 0, 0, 1920, 1080, is_main=True)]
+        self.assertIsNone(secondary_display_window(displays))
+
     def test_derives_detail_page_and_package_suffix(self) -> None:
         self.assertEqual(
             entry_page_url("https://apkpure.com/cn/app/pkg/download"),

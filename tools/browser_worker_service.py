@@ -101,6 +101,9 @@ def install(port: int) -> int:
         return 2
     if is_loaded():
         launchctl("bootout", SERVICE_TARGET, check=False)
+        deadline = time.monotonic() + 5
+        while is_loaded() and time.monotonic() < deadline:
+            time.sleep(0.1)
     write_plist(port)
     started_at = time.time()
     launchctl("bootstrap", DOMAIN, str(PLIST_PATH))
