@@ -323,6 +323,27 @@ button {
   text-align: center;
 }
 
+.nav-icon-cloudflare::before {
+  position: absolute;
+  inset: 7px 0 0;
+  content: "CF";
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: -0.04em;
+  text-align: center;
+}
+
+.nav-icon-cloudflare::after {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  left: 6px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  content: "";
+}
+
 .nav-icon-production::before,
 .nav-icon-production::after {
   position: absolute;
@@ -413,6 +434,11 @@ button {
 .nav-count-muted {
   color: #ffe4e6;
   background: rgba(217, 85, 85, 0.65);
+}
+
+.nav-count-warning {
+  color: #fff7ed;
+  background: rgba(234, 133, 23, 0.78);
 }
 
 .sidebar-status {
@@ -653,6 +679,237 @@ body.is-notfound-view .notfound-table .queue-keyword strong {
   overflow-wrap: anywhere;
   text-overflow: clip;
   white-space: normal;
+}
+
+body.is-cloudflare-view .content {
+  width: 100%;
+  max-width: none;
+  height: calc(100dvh - 112px);
+  padding: 18px clamp(16px, 2vw, 28px);
+  overflow: hidden;
+}
+
+html.is-cloudflare-view,
+body.is-cloudflare-view {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.is-cloudflare-view .admin-shell,
+body.is-cloudflare-view .workspace {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.is-cloudflare-view .topbar {
+  height: 112px;
+  min-height: 112px;
+}
+
+body.is-cloudflare-view #cloudflare-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+body.is-cloudflare-view .cloudflare-metrics {
+  flex: 0 0 auto;
+  margin-bottom: 12px;
+}
+
+.cloudflare-board {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  padding: 20px;
+}
+
+.cloudflare-heading {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.cloudflare-live-state {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid #f2d8b1;
+  border-radius: 999px;
+  color: #9a631f;
+  background: #fff9ef;
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.cloudflare-live-state .status-dot {
+  background: var(--orange);
+  box-shadow: 0 0 0 4px rgba(233, 133, 23, 0.1);
+}
+
+.cloudflare-list {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 12px;
+  min-height: 0;
+  margin-top: 18px;
+  padding-right: 4px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.cloudflare-card {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  align-items: start;
+  gap: 15px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #eadfce;
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(233, 133, 23, 0.06), transparent 58%),
+    #ffffff;
+}
+
+.cloudflare-app-icon {
+  display: block;
+  width: 64px;
+  height: 64px;
+  border: 1px solid #e1e5eb;
+  border-radius: 15px;
+  object-fit: cover;
+  background: #f4f6f8;
+}
+
+.cloudflare-icon-fallback {
+  display: grid;
+  place-items: center;
+  border-color: #eed8b7;
+  color: #a8641d;
+  background: #fff6e8;
+  font-size: 25px;
+  font-weight: 850;
+}
+
+.cloudflare-card-content,
+.cloudflare-card-heading,
+.cloudflare-card-heading > div {
+  min-width: 0;
+}
+
+.cloudflare-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cloudflare-card h3 {
+  overflow: hidden;
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloudflare-package {
+  display: block;
+  overflow: hidden;
+  margin-top: 4px;
+  color: #7e8999;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloudflare-badge {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border: 1px solid #f0d2a7;
+  border-radius: 999px;
+  color: #9d6019;
+  background: #fff7e9;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.cloudflare-reason {
+  display: -webkit-box;
+  overflow: hidden;
+  min-height: 38px;
+  margin: 12px 0 0;
+  color: #606b7b;
+  font-size: 12px;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.cloudflare-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 13px;
+}
+
+.cloudflare-meta {
+  overflow: hidden;
+  color: #8b95a4;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloudflare-link {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 7px 11px;
+  border: 1px solid #e4bd84;
+  border-radius: 8px;
+  color: #925612;
+  background: #fff8ed;
+  font-size: 11px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.cloudflare-link:hover {
+  border-color: #d69c4b;
+  background: #fff1da;
+}
+
+.cloudflare-pagination {
+  flex: 0 0 auto;
+}
+
+.cloudflare-placeholder {
+  grid-column: 1 / -1;
+  display: grid;
+  min-height: 220px;
+  margin: 0;
+  place-items: center;
+  color: #8e98a7;
+  font-size: 13px;
+}
+
+.cloudflare-placeholder.is-error {
+  color: var(--red);
 }
 
 .view-panel {
@@ -2520,13 +2777,27 @@ body.is-apkba-view #apkba-view {
     height: calc(100dvh - 60px);
   }
 
+  body.is-cloudflare-view .workspace {
+    height: calc(100dvh - 102px);
+  }
+
   body.is-notfound-view .topbar {
+    height: 92px;
+    min-height: 92px;
+  }
+
+  body.is-cloudflare-view .topbar {
     height: 92px;
     min-height: 92px;
   }
 
   body.is-notfound-view .content {
     height: calc(100dvh - 152px);
+    padding: 10px 12px;
+  }
+
+  body.is-cloudflare-view .content {
+    height: calc(100dvh - 194px);
     padding: 10px 12px;
   }
 
@@ -2547,6 +2818,23 @@ body.is-apkba-view #apkba-view {
 
   .queue-table.notfound-table {
     min-width: 820px;
+  }
+
+  .cloudflare-card {
+    grid-template-columns: 52px minmax(0, 1fr);
+    gap: 11px;
+    padding: 13px;
+  }
+
+  .cloudflare-app-icon {
+    width: 52px;
+    height: 52px;
+    border-radius: 12px;
+  }
+
+  .cloudflare-card-footer {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 
@@ -2808,6 +3096,10 @@ body.is-apkba-view #apkba-view {
   .error-apk-layout {
     grid-template-columns: 1fr;
   }
+
+  .cloudflare-list {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
@@ -2840,7 +3132,7 @@ body.is-apkba-view #apkba-view {
 
   .admin-nav {
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 5px;
     margin: 0;
   }

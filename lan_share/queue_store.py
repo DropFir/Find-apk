@@ -33,6 +33,24 @@ MANUAL_CATEGORY_STATUSES = {
     "paid": "manual_paid",
     "not_found": "manual_not_found",
 }
+CLOUDFLARE_BLOCKED_MARKERS = (
+    "cloudflare",
+    "人机验证",
+    "验证未完成",
+    "未完成验证",
+    "验证页",
+    "挑战页",
+    "返回 html",
+    "returned html",
+    "browser_required",
+    "持久 chrome",
+    "专用 chrome",
+    "cloudflare-faker",
+    "task preparation timeout",
+    "timed out",
+    "timeout",
+    "超时",
+)
 
 
 @dataclass(frozen=True)
@@ -97,6 +115,13 @@ def candidate_rejection_is_terminal(reason: str) -> bool:
         "签名链接无法刷新",
     )
     return any(marker in normalized for marker in terminal_markers)
+
+
+def is_cloudflare_blocked_retry(job: KeywordJob) -> bool:
+    if job.status != "retry" or not job.candidate_url:
+        return False
+    reason = clean_keyword(job.last_error).casefold()
+    return any(marker in reason for marker in CLOUDFLARE_BLOCKED_MARKERS)
 
 
 def keyword_search_filters(query: str) -> tuple[list[str], list[str]]:
@@ -635,6 +660,73 @@ class KeywordQueue:
             sql += f" WHERE {' AND '.join(conditions)}"
         with self._connection() as connection:
             return int(connection.execute(sql, parameters).fetchone()[0])
+
+    def list_cloudflare_blocked(
+        self,
+        *,
+        query: str = "",
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[KeywordJob]:
+        bounded_limit = max(1, min(limit, 100))
+        bounded_offset = max(0, offset)
+        marker_sql = " OR ".join(
+            "lower(COALESCE(last_error, '')) LIKE ?"
+            for _ in CLOUDFLARE_BLOCKED_MARKERS
+        )
+        search_conditions, search_parameters = keyword_search_filters(query)
+        search_sql = "".join(
+            f" AND {condition}" for condition in search_conditions
+        )
+        parameters: list[object] = [
+            *(f"%{marker}%" for marker in CLOUDFLARE_BLOCKED_MARKERS),
+            *search_parameters,
+            bounded_limit,
+            bounded_offset,
+        ]
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM keyword_jobs
+                WHERE status = 'retry'
+                  AND length(trim(COALESCE(candidate_url, ''))) > 0
+                  AND ({marker_sql})
+                  {search_sql}
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                parameters,
+            ).fetchall()
+        return [self._job(row) for row in rows]
+
+    def count_cloudflare_blocked(self, *, query: str = "") -> int:
+        marker_sql = " OR ".join(
+            "lower(COALESCE(last_error, '')) LIKE ?"
+            for _ in CLOUDFLARE_BLOCKED_MARKERS
+        )
+        search_conditions, search_parameters = keyword_search_filters(query)
+        search_sql = "".join(
+            f" AND {condition}" for condition in search_conditions
+        )
+        parameters: list[object] = [
+            *(f"%{marker}%" for marker in CLOUDFLARE_BLOCKED_MARKERS),
+            *search_parameters,
+        ]
+        with self._connection() as connection:
+            return int(
+                connection.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM keyword_jobs
+                    WHERE status = 'retry'
+                      AND length(trim(COALESCE(candidate_url, ''))) > 0
+                      AND ({marker_sql})
+                      {search_sql}
+                    """,
+                    parameters,
+                ).fetchone()[0]
+            )
 
     def get(self, job_id: int) -> KeywordJob | None:
         with self._connection() as connection:

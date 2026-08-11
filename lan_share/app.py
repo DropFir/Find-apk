@@ -3,19 +3,22 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import date as CalendarDate
+from functools import lru_cache
+from html.parser import HTMLParser
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import stat
 import time
 from typing import Literal
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode, urlparse
 from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -33,6 +36,7 @@ from lan_share.external_monitor import ExternalProductionMonitor
 from lan_share.indexer import DeliveryIndex
 from lan_share.production_queue import ProductionQueue
 from lan_share.queue_store import (
+    is_cloudflare_blocked_retry,
     KeywordQueue,
     QUEUE_STATUSES,
     SKIPPED_STATUSES,
@@ -83,6 +87,70 @@ browser_download_store = BrowserDownloadStore(
 )
 delivery_locks: dict[int, asyncio.Lock] = {}
 production_cleanup_lock = asyncio.Lock()
+
+
+PACKAGE_NAME_PATH_SEGMENT = re.compile(
+    r"(?:^|/)([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+){2,})(?:/|$)"
+)
+GOOGLE_ICON_HOSTS = {
+    "lh3.googleusercontent.com",
+    "play-lh.googleusercontent.com",
+}
+
+
+class OpenGraphImageParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.image_url = ""
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if self.image_url or tag.casefold() != "meta":
+            return
+        values = {str(name).casefold(): str(value) for name, value in attrs}
+        marker = values.get("property", "").casefold()
+        if marker == "og:image":
+            self.image_url = values.get("content", "").strip()
+
+
+def candidate_package_name(candidate_url: str) -> str:
+    try:
+        path = unquote(urlparse(candidate_url).path)
+    except ValueError:
+        return ""
+    matches = PACKAGE_NAME_PATH_SEGMENT.findall(path)
+    return matches[-1] if matches else ""
+
+
+def parse_open_graph_image(page: str) -> str:
+    parser = OpenGraphImageParser()
+    parser.feed(page)
+    return parser.image_url
+
+
+@lru_cache(maxsize=512)
+def google_play_icon_url(package_name: str) -> str:
+    if not PACKAGE_NAME_PATH_SEGMENT.fullmatch(f"/{package_name}/"):
+        return ""
+    url = "https://play.google.com/store/apps/details?" + urlencode(
+        {"id": package_name, "hl": "zh-CN", "gl": "US"}
+    )
+    request = UrlRequest(
+        url,
+        headers={
+            "Accept": "text/html,*/*;q=0.8",
+            "User-Agent": "Mozilla/5.0 Find-APK-LAN-Console/1.0",
+        },
+    )
+    try:
+        with urlopen(request, timeout=8) as response:
+            page = response.read(2 * 1024 * 1024).decode("utf-8", errors="replace")
+    except (HTTPError, URLError, OSError):
+        return ""
+    image_url = parse_open_graph_image(page)
+    parsed = urlparse(image_url)
+    if parsed.scheme != "https" or parsed.hostname not in GOOGLE_ICON_HOSTS:
+        return ""
+    return image_url
 
 
 def fetch_apkba_resource(url: str) -> tuple[int, str, bytes]:
@@ -544,6 +612,61 @@ async def keyword_jobs(
         },
     }
     return snapshot
+
+
+@app.get("/api/cloudflare-blocked")
+async def cloudflare_blocked_jobs(
+    q: str = Query(default="", max_length=200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+):
+    offset = (page - 1) * page_size
+    jobs = await asyncio.to_thread(
+        keyword_queue.list_cloudflare_blocked,
+        query=q,
+        limit=page_size,
+        offset=offset,
+    )
+    total = await asyncio.to_thread(
+        keyword_queue.count_cloudflare_blocked,
+        query=q,
+    )
+    items = []
+    for job in jobs:
+        item = job.as_json()
+        package_name = candidate_package_name(job.candidate_url)
+        item["package_name"] = package_name
+        item["candidate_host"] = urlparse(job.candidate_url).hostname or ""
+        item["icon_url"] = (
+            f"/api/cloudflare-blocked/{job.id}/icon" if package_name else ""
+        )
+        items.append(item)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    return {
+        "items": items,
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+        },
+    }
+
+
+@app.get("/api/cloudflare-blocked/{job_id}/icon")
+async def cloudflare_blocked_icon(job_id: int):
+    job = await asyncio.to_thread(keyword_queue.get, job_id)
+    if job is None or not is_cloudflare_blocked_retry(job):
+        raise HTTPException(status_code=404, detail="Blocked candidate not found")
+    package_name = candidate_package_name(job.candidate_url)
+    icon_url = await asyncio.to_thread(google_play_icon_url, package_name)
+    if not icon_url:
+        raise HTTPException(status_code=404, detail="App icon not found")
+    return RedirectResponse(
+        icon_url,
+        status_code=307,
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
 
 
 @app.post("/api/keywords")

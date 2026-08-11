@@ -32,6 +32,12 @@ const notFoundPageNext = document.querySelector("#notfound-page-next");
 const notFoundSearchForm = document.querySelector("#notfound-search-form");
 const notFoundSearchInput = document.querySelector("#notfound-search-input");
 const notFoundModeButtons = document.querySelectorAll("[data-notfound-mode]");
+const cloudflareList = document.querySelector("#cloudflare-list");
+const cloudflareTotalCount = document.querySelector("#cloudflare-total-count");
+const cloudflareNavCount = document.querySelector("#cloudflare-nav-count");
+const cloudflarePageSummary = document.querySelector("#cloudflare-page-summary");
+const cloudflarePagePrev = document.querySelector("#cloudflare-page-prev");
+const cloudflarePageNext = document.querySelector("#cloudflare-page-next");
 const productionDate = document.querySelector("#production-date");
 const productionTotalCount = document.querySelector("#production-total-count");
 const productionTodayDetail = document.querySelector("#production-today-detail");
@@ -127,6 +133,9 @@ let notFoundSearchTimer;
 let notFoundQuery = "";
 let notFoundMode = "pending";
 let notFoundEditingJobId = null;
+let cloudflareRequestActive = false;
+let latestCloudflareSnapshot = null;
+let cloudflarePage = 1;
 let productionRequestActive = false;
 let productionCleanupActive = false;
 let codexRequestActive = false;
@@ -139,6 +148,7 @@ const productionLaneDates = { 1: "", 2: "" };
 const productionDownloadPending = new Map();
 const queuePageSize = 20;
 const notFoundPageSize = 20;
+const cloudflarePageSize = 20;
 
 const viewMetadata = {
   library: {
@@ -170,6 +180,11 @@ const viewMetadata = {
     title: "错误 APK",
     description: "上传出现问题的完整 ZIP，并留下具体错误原因。",
     breadcrumb: "问题包",
+  },
+  cloudflare: {
+    title: "Cloudflare 拦截",
+    description: "查看已经确认精确页面、但仍等待验证或浏览器下载的 APK。",
+    breadcrumb: "受阻候选",
   },
   notfound: {
     title: "找不到 / 已跳过",
@@ -226,6 +241,14 @@ function switchView(viewName, { remember = true } = {}) {
     "is-notfound-view",
     viewName === "notfound",
   );
+  document.body.classList.toggle(
+    "is-cloudflare-view",
+    viewName === "cloudflare",
+  );
+  document.documentElement.classList.toggle(
+    "is-cloudflare-view",
+    viewName === "cloudflare",
+  );
   navTabs.forEach((tab) => {
     const active = tab.dataset.view === viewName;
     tab.classList.toggle("is-active", active);
@@ -255,6 +278,7 @@ function switchView(viewName, { remember = true } = {}) {
     loadBrowserWorker();
   }
   if (viewName === "error-apk") loadErrorApks();
+  if (viewName === "cloudflare") loadCloudflareBlocked();
   if (viewName === "notfound") loadNotFound();
 }
 
@@ -1582,6 +1606,148 @@ async function loadNotFound() {
   }
 }
 
+function cloudflareDisplayName(keyword) {
+  return String(keyword || "").replace(/^\s*\d+\.\s*/, "").trim() || "APK";
+}
+
+function cloudflareReason(reason) {
+  const value = String(reason || "等待浏览器验证").trim();
+  const prefix = "精确候选仍存在，当前仅因验证或临时下载失败等待重试：";
+  return value.startsWith(prefix) ? value.slice(prefix.length) : value;
+}
+
+function createCloudflareIcon(job) {
+  const name = cloudflareDisplayName(job.keyword);
+  const fallback = () => {
+    const initial = createElement(
+      "span",
+      "cloudflare-app-icon cloudflare-icon-fallback",
+      name.slice(0, 1).toLocaleUpperCase(),
+    );
+    initial.setAttribute("aria-hidden", "true");
+    return initial;
+  };
+  if (!job.icon_url) return fallback();
+  const icon = createElement("img", "cloudflare-app-icon");
+  icon.src = job.icon_url;
+  icon.alt = `${name} 图标`;
+  icon.loading = "lazy";
+  icon.width = 64;
+  icon.height = 64;
+  icon.addEventListener("error", () => icon.replaceWith(fallback()), {
+    once: true,
+  });
+  return icon;
+}
+
+function createCloudflareCard(job) {
+  const card = createElement("article", "cloudflare-card");
+  const icon = createCloudflareIcon(job);
+  const content = createElement("div", "cloudflare-card-content");
+  const heading = createElement("div", "cloudflare-card-heading");
+  const titleGroup = createElement("div");
+  const title = createElement("h3", "", cloudflareDisplayName(job.keyword));
+  title.title = job.keyword || "";
+  const packageName = createElement(
+    "span",
+    "cloudflare-package",
+    job.package_name || job.candidate_host || "精确候选页",
+  );
+  titleGroup.append(title, packageName);
+  const badge = createElement("span", "cloudflare-badge", "Cloudflare 拦截");
+  heading.append(titleGroup, badge);
+
+  const reason = createElement(
+    "p",
+    "cloudflare-reason",
+    cloudflareReason(job.last_error),
+  );
+  reason.title = cloudflareReason(job.last_error);
+
+  const footer = createElement("div", "cloudflare-card-footer");
+  const meta = createElement(
+    "span",
+    "cloudflare-meta",
+    `更新 ${formatQueueTime(job.updated_at)} · 已尝试 ${job.attempt_count || 0} 次`,
+  );
+  const link = createElement("a", "cloudflare-link", "打开候选页");
+  link.href = job.candidate_url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.setAttribute("aria-label", `打开 ${cloudflareDisplayName(job.keyword)} 候选页`);
+  footer.append(meta, link);
+
+  content.append(heading, reason, footer);
+  card.append(icon, content);
+  return card;
+}
+
+function renderCloudflareBlocked(snapshot) {
+  latestCloudflareSnapshot = snapshot;
+  const pagination = snapshot.pagination || {};
+  const total = pagination.total || 0;
+  cloudflareTotalCount.textContent = total;
+  cloudflareNavCount.textContent = total;
+  cloudflareNavCount.hidden = total === 0;
+  cloudflareList.replaceChildren();
+
+  if (!snapshot.items?.length) {
+    cloudflareList.append(
+      createElement(
+        "p",
+        "cloudflare-placeholder",
+        "当前没有等待 Cloudflare 验证的精确候选。",
+      ),
+    );
+  } else {
+    const fragment = document.createDocumentFragment();
+    snapshot.items.forEach((job) => fragment.append(createCloudflareCard(job)));
+    cloudflareList.append(fragment);
+  }
+
+  const currentPage = pagination.page || 1;
+  const totalPages = pagination.total_pages || 1;
+  cloudflarePageSummary.textContent =
+    `第 ${currentPage} / ${totalPages} 页 · 共 ${total} 条`;
+  cloudflarePagePrev.disabled = currentPage <= 1;
+  cloudflarePageNext.disabled = currentPage >= totalPages;
+}
+
+async function loadCloudflareBlocked() {
+  if (cloudflareRequestActive) return;
+  cloudflareRequestActive = true;
+  try {
+    const response = await fetch(
+      `/api/cloudflare-blocked?page=${cloudflarePage}&page_size=${cloudflarePageSize}`,
+      { headers: { Accept: "application/json" }, cache: "no-store" },
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    renderCloudflareBlocked(await response.json());
+  } catch {
+    cloudflareList.replaceChildren(
+      createElement(
+        "p",
+        "cloudflare-placeholder is-error",
+        "Cloudflare 拦截记录暂时无法连接",
+      ),
+    );
+  } finally {
+    cloudflareRequestActive = false;
+  }
+}
+
+function changeCloudflarePage(direction) {
+  const pagination = latestCloudflareSnapshot?.pagination || {};
+  const totalPages = pagination.total_pages || 1;
+  const nextPage = Math.min(
+    totalPages,
+    Math.max(1, cloudflarePage + direction),
+  );
+  if (nextPage === cloudflarePage) return;
+  cloudflarePage = nextPage;
+  loadCloudflareBlocked();
+}
+
 async function loadQueue() {
   if (queueRequestActive) return;
   queueRequestActive = true;
@@ -1747,6 +1913,8 @@ queuePagePrev.addEventListener("click", () => changeQueuePage(-1));
 queuePageNext.addEventListener("click", () => changeQueuePage(1));
 notFoundPagePrev.addEventListener("click", () => changeNotFoundPage(-1));
 notFoundPageNext.addEventListener("click", () => changeNotFoundPage(1));
+cloudflarePagePrev.addEventListener("click", () => changeCloudflarePage(-1));
+cloudflarePageNext.addEventListener("click", () => changeCloudflarePage(1));
 notFoundSearchForm.addEventListener("submit", (event) => {
   event.preventDefault();
   clearTimeout(notFoundSearchTimer);
@@ -1820,12 +1988,14 @@ search();
 updateStatus();
 loadQueue();
 loadNotFound();
+loadCloudflareBlocked();
 loadErrorApks();
 loadCodexController();
 loadBrowserWorker();
 setInterval(updateStatus, 3000);
 setInterval(loadQueue, 4000);
 setInterval(loadNotFound, 4000);
+setInterval(loadCloudflareBlocked, 5000);
 setInterval(loadProduction, 4000);
 setInterval(loadErrorApks, 5000);
 setInterval(loadCodexController, 3000);

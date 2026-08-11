@@ -339,6 +339,39 @@ class KeywordQueueTests(unittest.TestCase):
             self.assertEqual([job.id for job in claimed], [pending["id"]])
             self.assertEqual(queue.get(blocked["id"]).status, "retry")
 
+    def test_lists_only_exact_candidates_blocked_by_browser_challenges(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            queue = self.make_queue(Path(temporary))
+            jobs = queue.add(
+                ["Cloudflare App", "HTML Download App", "TLS Only App"]
+            )["created"]
+            queue.claim(limit=3, worker="agent")
+            for job in jobs:
+                queue.record_candidate(
+                    job["id"],
+                    url=f"https://example.com/app/com.example.app{job['id']}",
+                )
+            queue.clear_candidate(
+                jobs[0]["id"],
+                reason="Cloudflare verification timeout after Chrome",
+            )
+            queue.clear_candidate(
+                jobs[1]["id"],
+                reason="d.apkpure file entry returned HTML",
+            )
+            queue.clear_candidate(
+                jobs[2]["id"],
+                reason="TLS connection closed before page verification",
+            )
+
+            blocked = queue.list_cloudflare_blocked()
+
+            self.assertEqual(
+                {job.keyword for job in blocked},
+                {"Cloudflare App", "HTML Download App"},
+            )
+            self.assertEqual(queue.count_cloudflare_blocked(), 2)
+
     def test_reopen_completed_job_keeps_original_queue_position(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             queue = self.make_queue(Path(temporary))

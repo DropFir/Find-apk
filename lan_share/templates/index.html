@@ -9,8 +9,8 @@
       name="description"
       content="管理局域网 APK 文件库和关键词查找任务"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=20260810-05" />
-    <script src="/static/app.js?v=20260811-02" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20260811-06" />
+    <script src="/static/app.js?v=20260811-06" defer></script>
   </head>
   <body>
     <div class="admin-shell">
@@ -123,6 +123,21 @@
               <small>提交问题 ZIP 和原因</small>
             </span>
             <span class="nav-count nav-count-muted" id="error-apk-nav-count" hidden>0</span>
+          </button>
+          <button
+            class="nav-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="cloudflare-view"
+            data-view="cloudflare"
+          >
+            <span class="nav-icon nav-icon-cloudflare" aria-hidden="true"></span>
+            <span class="nav-copy">
+              <strong>Cloudflare 拦截</strong>
+              <small>已确认页面但等待验证</small>
+            </span>
+            <span class="nav-count nav-count-warning" id="cloudflare-nav-count" hidden>0</span>
           </button>
           <button
             class="nav-tab"
@@ -279,6 +294,62 @@
               title="APKBA 制作站"
               loading="eager"
             ></iframe>
+          </section>
+
+          <section
+            class="view-panel"
+            id="cloudflare-view"
+            role="tabpanel"
+            data-view-panel="cloudflare"
+            hidden
+          >
+            <div class="metric-grid cloudflare-metrics" aria-label="Cloudflare 拦截状态">
+              <article class="metric-card metric-warning">
+                <div>
+                  <small>等待验证</small>
+                  <strong id="cloudflare-total-count">0</strong>
+                </div>
+                <span>已确认精确候选页</span>
+              </article>
+              <article class="metric-card">
+                <div>
+                  <small>候选状态</small>
+                  <strong>已锁定</strong>
+                </div>
+                <span>不会误标为找不到</span>
+              </article>
+              <article class="metric-card">
+                <div>
+                  <small>处理方式</small>
+                  <strong>打开</strong>
+                </div>
+                <span>从链接进入验证或下载页</span>
+              </article>
+            </div>
+
+            <section class="admin-panel cloudflare-board" aria-labelledby="cloudflare-list-title">
+              <div class="panel-heading cloudflare-heading">
+                <div>
+                  <p class="panel-kicker">BLOCKED APK CANDIDATES</p>
+                  <h2 id="cloudflare-list-title">Cloudflare 拦截问题</h2>
+                  <p>这些应用已经找到确切页面，只因验证、HTML 响应或浏览器超时暂未取得安装包。</p>
+                </div>
+                <span class="cloudflare-live-state">
+                  <span class="status-dot"></span>
+                  自动读取重试队列
+                </span>
+              </div>
+              <div class="cloudflare-list" id="cloudflare-list" aria-live="polite">
+                <p class="cloudflare-placeholder">正在读取受阻候选…</p>
+              </div>
+              <div class="table-pagination cloudflare-pagination">
+                <span id="cloudflare-page-summary">第 1 页</span>
+                <div>
+                  <button type="button" id="cloudflare-page-prev">上一页</button>
+                  <button type="button" id="cloudflare-page-next">下一页</button>
+                </div>
+              </div>
+            </section>
           </section>
 
           <section
