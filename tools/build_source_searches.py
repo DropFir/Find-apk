@@ -37,12 +37,27 @@ def build_searches(
         name = str(source.get("name", "unnamed"))
         base_url = str(source.get("baseUrl", ""))
         template = source.get("searchUrlTemplate")
+        query_template = source.get("searchQueryTemplate")
         mode = source.get("searchMode")
 
         for term_type, term in terms:
             domain = urlparse(base_url).netloc if base_url else ""
             fallback_target = f'site:{domain} "{term}" APK' if domain else ""
-            if isinstance(template, str) and "{query}" in template:
+            if (
+                mode == "webQuery"
+                and isinstance(query_template, str)
+                and "{query}" in query_template
+            ):
+                searches.append(
+                    {
+                        "source": name,
+                        "term_type": term_type,
+                        "method": "external_query",
+                        "target": query_template.replace("{query}", term),
+                        "fallback_target": "",
+                    }
+                )
+            elif isinstance(template, str) and "{query}" in template:
                 searches.append(
                     {
                         "source": name,

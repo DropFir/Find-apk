@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -108,6 +109,56 @@ class BuildSourceSearchesTests(unittest.TestCase):
         self.assertEqual(
             searches[3]["fallback_target"],
             'site:apkpure.net "com.t11.skyviewfree" APK',
+        )
+
+    def test_supports_generic_google_alternative_query(self) -> None:
+        config = {
+            "preferredSources": [
+                {
+                    "name": "Google Web Alternatives",
+                    "searchMode": "webQuery",
+                    "searchQueryTemplate": '"{query}" Android APK download',
+                    "enabled": True,
+                }
+            ]
+        }
+
+        searches = build_searches(config, "Example App", "com.example.app")
+
+        self.assertEqual(
+            [item["target"] for item in searches],
+            [
+                '"Example App" Android APK download',
+                '"com.example.app" Android APK download',
+            ],
+        )
+        self.assertTrue(
+            all(item["method"] == "external_query" for item in searches)
+        )
+
+    def test_repository_prioritizes_google_before_cloudflare_prone_sources(
+        self,
+    ) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "sources.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        enabled = [
+            source
+            for source in config["preferredSources"]
+            if source.get("enabled", False)
+        ]
+        names = [source["name"] for source in enabled]
+
+        self.assertEqual(names[0], "Google Web Alternatives")
+        first_blocked_index = min(
+            index
+            for index, source in enumerate(enabled)
+            if source.get("priorityTier") == "cloudflare-last"
+        )
+        self.assertTrue(
+            all(
+                source.get("priorityTier") == "cloudflare-last"
+                for source in enabled[first_blocked_index:]
+            )
         )
 
     def test_does_not_append_public_downloader_without_confirmed_package(self) -> None:

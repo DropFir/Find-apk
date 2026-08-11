@@ -196,6 +196,8 @@ Google Play 精确页的最终 `id=`、标题和开发者一致时，成功下�
 
 读取仓库根目录的 `sources.json`。`preferredSources` 数组顺序用于选择结果，不要求逐站串行等待。相互独立的搜索查询应在一次工具调用中批量执行。
 
+`preferredSources` 中的通用 Google Web Alternatives 查询和未被本机历史记录反复拦截的来源必须先执行。标有 `priorityTier: cloudflare-last` 的 APKPure、APKPure.net、APKCombo、Uptodown 等来源放在最后：只有 Google 替代来源、APKMirror、AndroidAPKs、CNET、Softonic 等较低阻塞路径没有可下载候选时才进入。Google 查询发现新的公开来源后，仍须核对标题、开发者、包名、版本与实际文件格式，并通过相同下载与完整性校验；MOD、破解、安装器和包名不符的文件仍禁止采用。不得因为已知 APKPure 精确页存在就跳过排在它前面的 Google/其他来源搜索，也不得让四个自动 Agent 同时优先进入历史 Cloudflare 受阻域名。
+
 确认包名后，先运行以下命令生成本关键词的完整来源搜索计划；它只输出到终端，不创建本地审计文件：
 
 ```bash

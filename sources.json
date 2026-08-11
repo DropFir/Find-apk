@@ -342,44 +342,15 @@
   },
   "preferredSources": [
     {
-      "name": "APKPure",
-      "baseUrl": "https://apkpure.com",
-      "searchUrlTemplate": "https://apkpure.com/search?q={query}",
-      "homepageRequired": false,
-      "enabled": true
-    },
-    {
-      "name": "APKPure.net",
-      "baseUrl": "https://apkpure.net",
-      "searchUrlTemplate": "https://apkpure.net/search?q={query}",
-      "homepageRequired": false,
-      "enabled": true
-    },
-    {
-      "name": "APKPac Canada",
-      "baseUrl": "https://ca.apkpac.com",
-      "searchUrlTemplate": "https://ca.apkpac.com/search?q={query}",
-      "homepageRequired": false,
-      "enabled": false,
-      "disabledReason": "User safety rule blocks this domain; keeping it enabled caused queue jobs to retry forever."
-    },
-    {
-      "name": "APKCombo",
-      "baseUrl": "https://apkcombo.com",
-      "searchUrlTemplate": "https://apkcombo.com/search?q={query}",
+      "name": "Google Web Alternatives",
+      "searchMode": "webQuery",
+      "searchQueryTemplate": "\"{query}\" Android APK download",
       "homepageRequired": false,
       "enabled": true
     },
     {
       "name": "APKMirror",
       "baseUrl": "https://www.apkmirror.com",
-      "searchMode": "externalSiteQuery",
-      "homepageRequired": false,
-      "enabled": true
-    },
-    {
-      "name": "CNET Download",
-      "baseUrl": "https://download.cnet.com",
       "searchMode": "externalSiteQuery",
       "homepageRequired": false,
       "enabled": true
@@ -392,8 +363,8 @@
       "enabled": true
     },
     {
-      "name": "Uptodown",
-      "baseUrl": "https://uptodown.com",
+      "name": "CNET Download",
+      "baseUrl": "https://download.cnet.com",
       "searchMode": "externalSiteQuery",
       "homepageRequired": false,
       "enabled": true
@@ -404,6 +375,46 @@
       "searchMode": "externalSiteQuery",
       "homepageRequired": false,
       "enabled": true
+    },
+    {
+      "name": "APKCombo",
+      "baseUrl": "https://apkcombo.com",
+      "searchUrlTemplate": "https://apkcombo.com/search?q={query}",
+      "homepageRequired": false,
+      "priorityTier": "cloudflare-last",
+      "enabled": true
+    },
+    {
+      "name": "APKPure",
+      "baseUrl": "https://apkpure.com",
+      "searchUrlTemplate": "https://apkpure.com/search?q={query}",
+      "homepageRequired": false,
+      "priorityTier": "cloudflare-last",
+      "enabled": true
+    },
+    {
+      "name": "APKPure.net",
+      "baseUrl": "https://apkpure.net",
+      "searchUrlTemplate": "https://apkpure.net/search?q={query}",
+      "homepageRequired": false,
+      "priorityTier": "cloudflare-last",
+      "enabled": true
+    },
+    {
+      "name": "Uptodown",
+      "baseUrl": "https://uptodown.com",
+      "searchMode": "externalSiteQuery",
+      "homepageRequired": false,
+      "priorityTier": "cloudflare-last",
+      "enabled": true
+    },
+    {
+      "name": "APKPac Canada",
+      "baseUrl": "https://ca.apkpac.com",
+      "searchUrlTemplate": "https://ca.apkpac.com/search?q={query}",
+      "homepageRequired": false,
+      "enabled": false,
+      "disabledReason": "User safety rule blocks this domain; keeping it enabled caused queue jobs to retry forever."
     }
   ],
   "publicDownloaderFallbacks": [

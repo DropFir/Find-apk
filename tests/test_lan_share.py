@@ -407,6 +407,8 @@ class DeliveryIndexTests(unittest.TestCase):
             prompt = controller._worker_prompt("lan-codex-1")
 
         self.assertIn("--worker \"lan-codex-1\" --automatic", prompt)
+        self.assertIn("Google Web Alternatives", prompt)
+        self.assertIn("cloudflare-last", prompt)
 
     def test_codex_controller_starts_followup_outside_reader_thread(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
