@@ -85,6 +85,79 @@ class AnalyzeHtmlTests(unittest.TestCase):
         self.assertEqual(result.classification, "browser_required")
         self.assertEqual(result.links, [])
 
+    def test_uptodown_store_installer_data_url_is_not_a_package_candidate(self) -> None:
+        html = """
+        <html><body>
+          <p>com.flightradar24free</p><p>Version 11.7.0</p>
+          <button data-url="/android/download-with-uptodown-app-store">
+            Download with Uptodown App Store
+          </button>
+          <button class="button variants">All variants</button>
+        </body></html>
+        """
+        result = analyze_html(
+            html,
+            "https://flightradar24.en.uptodown.com/android/download",
+            expected_package="com.flightradar24free",
+            expected_version="11.7.0",
+        )
+        self.assertEqual(result.classification, "browser_required")
+        self.assertEqual(result.links, [])
+
+    def test_androidapks_direct_package_link_is_extracted(self) -> None:
+        direct_url = (
+            "https://r-static-assets.androidapksfree.net/rdata/example/"
+            "com.offerup_v4.45.0.apk"
+        )
+        html = f"""
+        <html><body>
+          <p>com.offerup</p><p>Version 4.45.0</p>
+          <a href="{direct_url}">Download APK</a>
+        </body></html>
+        """
+        result = analyze_html(
+            html,
+            "https://androidapks.com/offerup/com-offerup/download/",
+            expected_package="com.offerup",
+            expected_version="4.45.0",
+        )
+        self.assertEqual(result.classification, "download_link")
+        self.assertEqual(result.links, [direct_url])
+
+    def test_softonic_uses_target_download_and_ignores_helper(self) -> None:
+        target_url = (
+            "https://en.softonic.com/download/ai-grammar-checker-for-english/"
+            "android/post-download?dt=internalDownload"
+        )
+        helper_url = (
+            "https://en.softonic.com/download/softonic-helper/"
+            "android/post-download?dt=internalDownload"
+        )
+        html = f"""
+        <html><body>
+          <p>com.hellotalk.aigrammar</p><p>Version 1.6.25</p>
+          <a href="{helper_url}">Download with Softonic Helper</a>
+          <a href="{target_url}">Free XAPK Download for Android</a>
+        </body></html>
+        """
+        result = analyze_html(
+            html,
+            "https://ai-grammar-checker-for-english.en.softonic.com/android/download",
+            expected_package="com.hellotalk.aigrammar",
+            expected_version="1.6.25",
+        )
+        self.assertEqual(result.classification, "download_link")
+        self.assertEqual(result.links, [target_url])
+
+    def test_softonic_client_challenge_requires_browser(self) -> None:
+        result = analyze_html(
+            "<html><title>Client Challenge</title></html>",
+            "https://ai-grammar-checker-for-english.en.softonic.com/android",
+            expected_package="com.hellotalk.aigrammar",
+            expected_version="1.6.25",
+        )
+        self.assertEqual(result.classification, "browser_required")
+
     def test_apkpure_public_file_link_is_extracted(self) -> None:
         html = """
         com.toctoc.video.live.chat 1.1.6268
@@ -103,6 +176,25 @@ class AnalyzeHtmlTests(unittest.TestCase):
             result.links,
             ["https://d.apkpure.net/b/APK/com.toctoc.video.live.chat?version=latest"],
         )
+
+    def test_apkpure_promotional_client_link_is_filtered(self) -> None:
+        package = "com.je.supersus"
+        requested = f"https://d.apkpure.com/b/XAPK/{package}?version=latest"
+        html = f"""
+        {package} 1.80.6.031
+        <a href="{requested}">Download XAPK</a>
+        <a href="https://d.apkpure.com/custom/com.apkpure.aegon-3207737.apk">
+          Install APKPure
+        </a>
+        """
+        result = analyze_html(
+            html,
+            f"https://apkpure.com/super-sus/{package}/download",
+            expected_package=package,
+            expected_version="1.80.6.031",
+        )
+        self.assertEqual(result.classification, "download_link")
+        self.assertEqual(result.links, [requested])
 
     def test_apkpure_detail_without_file_anchor_requires_browser(self) -> None:
         html = """

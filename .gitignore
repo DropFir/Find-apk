@@ -12,6 +12,7 @@ __pycache__/
 /.venv-*/
 /venv/
 /tools/vendor/
+/.find-apk-share/
 
 # Operating-system metadata.
 .DS_Store

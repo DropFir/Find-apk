@@ -6,15 +6,31 @@ from __future__ import annotations
 import argparse
 from html.parser import HTMLParser
 from pathlib import Path
+import os
 import re
 import socket
 import subprocess
 import sys
+from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
-from cloudflare_faker_client import CloudflareFakerError, fetch_rendered_html
+from cloudflare_faker_client import (
+    CloudflareFakerError,
+    download_package_with_browser,
+    fetch_rendered_html,
+)
+from browser_worker_client import (
+    BrowserWorkerError,
+    download_package_with_persistent_browser,
+    persistent_browser_available,
+)
+from download_file import (
+    acquire_download_lock,
+    release_download_lock,
+    validate_download,
+)
 from extract_download_link import (
     VERSION_POLICIES,
     Analysis,
@@ -47,6 +63,13 @@ APKPURE_CDN_HEADERS = {
     "Accept": "*/*",
     "Accept-Language": BROWSER_NAVIGATION_HEADERS["Accept-Language"],
 }
+
+
+def write_source_page(output: Path, page_url: str) -> None:
+    source = output.expanduser().resolve(strict=False).parent / "source.txt"
+    temporary = source.with_name(f".{source.name}.{os.getpid()}.tmp")
+    temporary.write_text(f"{page_url.strip()}\n", encoding="utf-8")
+    os.replace(temporary, source)
 
 
 class APKMirrorLinkParser(HTMLParser):
@@ -91,6 +114,11 @@ def parse_args() -> argparse.Namespace:
         default=45.0,
         help="Cloudflare-Faker render timeout; independent from the normal page timeout",
     )
+    parser.add_argument(
+        "--allow-tv",
+        action="store_true",
+        help="Allow an Android TV-only package for an explicit TV request.",
+    )
     return parser.parse_args()
 
 
@@ -116,6 +144,23 @@ def apkpure_download_page_url(
     if expected_package.casefold() not in unquote(path).casefold():
         return None
     return urlunparse(parsed._replace(path=f"{path}/download", query="", fragment=""))
+
+
+def softonic_download_page_url(page_url: str) -> str | None:
+    """Return Softonic's public Android detail-to-download transition."""
+    parsed = urlparse(page_url)
+    hostname = (parsed.hostname or "").casefold()
+    if not (hostname == "softonic.com" or hostname.endswith(".softonic.com")):
+        return None
+    path = parsed.path.rstrip("/")
+    if not path.casefold().endswith("/android"):
+        return None
+    return urlunparse(parsed._replace(path=f"{path}/download", query="", fragment=""))
+
+
+def is_softonic_url(url: str) -> bool:
+    hostname = (urlparse(url).hostname or "").casefold()
+    return hostname == "softonic.com" or hostname.endswith(".softonic.com")
 
 
 def is_apkpure_cdn_url(url: str) -> bool:
@@ -205,6 +250,97 @@ def apkpure_cdn_detected_version(final_url: str) -> str | None:
     return match.group(1) if match else None
 
 
+def browser_download_candidate_priority(url: str) -> tuple[int, str]:
+    lowered = unquote(url).casefold()
+    if "arm64-v8a" in lowered:
+        return (0, lowered)
+    if "version=latest" in lowered:
+        return (1, lowered)
+    if "armeabi-v7a" in lowered or "armeabi" in lowered:
+        return (2, lowered)
+    return (3, lowered)
+
+
+def save_downloaded_browser_file(
+    page_url: str,
+    download_url: str,
+    output: Path,
+    expected_package: str,
+    loader: Callable[[], tuple[Path, str, int]],
+    *,
+    allow_tv: bool = False,
+) -> tuple[str, int]:
+    """Validate one completed browser file and atomically save it."""
+    output = output.expanduser().resolve(strict=False)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    lock = acquire_download_lock(output)
+    downloaded: Path | None = None
+    try:
+        downloaded, final_url, byte_count = loader()
+        validate_download(
+            downloaded,
+            output.suffix.casefold(),
+            "application/octet-stream",
+            allow_tv=allow_tv,
+            expected_package=expected_package,
+        )
+        os.replace(downloaded, output)
+        downloaded = None
+    finally:
+        if downloaded is not None:
+            downloaded.unlink(missing_ok=True)
+        release_download_lock(lock)
+    write_source_page(output, page_url)
+    return final_url or download_url, byte_count or output.stat().st_size
+
+
+def save_browser_download(
+    page_url: str,
+    download_url: str,
+    output: Path,
+    expected_package: str,
+    *,
+    allow_tv: bool = False,
+) -> tuple[str, int]:
+    """Use the legacy extension-backed Chrome download path."""
+    return save_downloaded_browser_file(
+        page_url,
+        download_url,
+        output,
+        expected_package,
+        lambda: download_package_with_browser(
+            page_url,
+            download_url,
+            LARGE_PACKAGE_TIMEOUT,
+        ),
+        allow_tv=allow_tv,
+    )
+
+
+def save_persistent_browser_download(
+    page_url: str,
+    download_url: str,
+    output: Path,
+    expected_package: str,
+    *,
+    allow_tv: bool = False,
+) -> tuple[str, int]:
+    """Queue a download in the LAN service's dedicated persistent Chrome."""
+    return save_downloaded_browser_file(
+        page_url,
+        download_url,
+        output,
+        expected_package,
+        lambda: download_package_with_persistent_browser(
+            page_url,
+            download_url,
+            suffix=output.suffix.casefold(),
+            timeout=960,
+        ),
+        allow_tv=allow_tv,
+    )
+
+
 def is_apkmirror_url(url: str) -> bool:
     hostname = (urlparse(url).hostname or "").casefold()
     return hostname == "apkmirror.com" or hostname.endswith(".apkmirror.com")
@@ -279,7 +415,10 @@ def resolve_download_page(
     detected_version = analysis.detected_version
     transition_url = None
     if analysis.classification == "browser_required":
-        transition_url = apkpure_download_page_url(page.final_url, expected_package)
+        transition_url = (
+            apkpure_download_page_url(page.final_url, expected_package)
+            or softonic_download_page_url(page.final_url)
+        )
         if transition_url is not None:
             page = fetch_page(transition_url, timeout)
             analysis = preserve_detected_version(
@@ -293,7 +432,7 @@ def resolve_download_page(
                 ),
                 detected_version,
             )
-            if analysis.classification in {
+            if apkpure_download_page_url(page_url, expected_package) is not None and analysis.classification in {
                 "browser_required",
                 "cloudflare_challenge",
                 "gone",
@@ -436,6 +575,8 @@ def main() -> int:
             transition = "apkmirror_download_page"
         elif is_apkpure_cdn_url(transition_url):
             transition = "apkpure_cdn_fallback"
+        elif is_softonic_url(transition_url):
+            transition = "softonic_download_page"
         else:
             transition = "apkpure_download_page"
         print(f"transition={transition}")
@@ -454,38 +595,107 @@ def main() -> int:
             print(f"pipeline_result={analysis.classification}")
         return 1
 
-    download_url = analysis.links[0]
-    print(f"download_url={download_url}")
-    sys.stdout.flush()
-    command = [
-        sys.executable,
-        str(DOWNLOAD_TOOL),
-        download_url,
-        str(args.output),
-        "--timeout",
-        f"{args.download_timeout:g}",
-        "--retries",
-        str(args.retries),
-    ]
-    completed = subprocess.run(
-        command,
-        check=False,
-        timeout=(
-            (
-                max(args.download_timeout, LARGE_PACKAGE_TIMEOUT)
-                if args.output.suffix.lower() in PACKAGE_SUFFIXES
-                else args.download_timeout
+    for candidate_index, download_url in enumerate(analysis.links, start=1):
+        print(f"candidate_index={candidate_index}")
+        print(f"download_url={download_url}")
+        sys.stdout.flush()
+        command = [
+            sys.executable,
+            str(DOWNLOAD_TOOL),
+            download_url,
+            str(args.output),
+            "--timeout",
+            f"{args.download_timeout:g}",
+            "--retries",
+            str(args.retries),
+            "--expected-package",
+            args.package_name,
+        ]
+        if args.allow_tv:
+            command.append("--allow-tv")
+        completed = subprocess.run(
+            command,
+            check=False,
+            timeout=(
+                (
+                    max(args.download_timeout, LARGE_PACKAGE_TIMEOUT)
+                    if args.output.suffix.lower() in PACKAGE_SUFFIXES
+                    else args.download_timeout
+                )
+                + 3
             )
-            + 3
+            * (args.retries + 1)
+            + 5,
         )
-        * (args.retries + 1)
-        + 5,
-    )
-    if completed.returncode == 0:
-        print("pipeline_result=saved")
+        if completed.returncode == 0:
+            write_source_page(args.output, args.page_url)
+            print("pipeline_result=saved")
+            return 0
+        print(f"candidate_result=download_failed:{candidate_index}")
+
+    if analysis.links and all(is_apkpure_cdn_url(url) for url in analysis.links):
+        browser_candidates = sorted(
+            analysis.links,
+            key=browser_download_candidate_priority,
+        )
+        browser_url = browser_candidates[0]
+        if persistent_browser_available():
+            print("transition=persistent_chrome_browser_click")
+            print(f"transition_page_url={page.final_url}")
+            print(f"browser_download_url={browser_url}")
+            sys.stdout.flush()
+            try:
+                final_url, byte_count = save_persistent_browser_download(
+                    page.final_url,
+                    browser_url,
+                    args.output,
+                    args.package_name,
+                    allow_tv=args.allow_tv,
+                )
+            except (
+                BrowserWorkerError,
+                OSError,
+                RuntimeError,
+                ValueError,
+            ) as error:
+                print(f"persistent_browser_error={type(error).__name__}: {error}")
+            else:
+                print(f"browser_download_final_url={final_url}")
+                print(f"bytes={byte_count}")
+                print("pipeline_result=saved")
+                return 0
+        if args.cloudflare_faker:
+            print("transition=cloudflare_faker_browser_click")
+            print(f"transition_page_url={page.final_url}")
+            print(f"browser_download_url={browser_url}")
+            sys.stdout.flush()
+            try:
+                final_url, byte_count = save_browser_download(
+                    page.final_url,
+                    browser_url,
+                    args.output,
+                    args.package_name,
+                    allow_tv=args.allow_tv,
+                )
+            except (
+                CloudflareFakerError,
+                OSError,
+                RuntimeError,
+                ValueError,
+            ) as error:
+                print(f"browser_download_error={type(error).__name__}: {error}")
+            else:
+                print(f"browser_download_final_url={final_url}")
+                print(f"bytes={byte_count}")
+                print("pipeline_result=saved")
+                return 0
+        # The exact app page was found, but APKPure's file host may require a
+        # browser/Cloudflare session.  Keep this distinct from a missing app so
+        # queue workers perform one browser fallback and then rotate sources.
+        print("pipeline_result=browser_download_required")
     else:
         print("pipeline_result=download_failed")
-    return completed.returncode
+    return 1
 
 
 if __name__ == "__main__":

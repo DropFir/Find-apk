@@ -14,6 +14,11 @@ def parse_args() -> argparse.Namespace:
         description="Validate ZIP/CRC and split completeness of a local package."
     )
     parser.add_argument("package", type=Path, help="Existing APK/XAPK/APKM/APKS")
+    parser.add_argument(
+        "--allow-tv",
+        action="store_true",
+        help="Allow an Android TV-only package for an explicit TV request.",
+    )
     return parser.parse_args()
 
 
@@ -30,7 +35,12 @@ def main() -> int:
         print(f"package={package.as_posix()}")
         return 2
     try:
-        validate_download(package, suffix, "application/octet-stream")
+        validate_download(
+            package,
+            suffix,
+            "application/octet-stream",
+            allow_tv=args.allow_tv,
+        )
     except (OSError, ValueError) as error:
         print("classification=invalid_package")
         print(f"package={package.as_posix()}")

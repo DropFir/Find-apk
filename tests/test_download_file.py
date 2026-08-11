@@ -10,15 +10,19 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import zipfile
 
 
 TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS_DIR))
 
+import download_file as download_module  # noqa: E402
 from download_file import (  # noqa: E402
     acquire_download_lock,
     effective_download_timeout,
+    inspect_manifest_platform_info,
+    inspect_manifest_package_name,
     inspect_manifest_split_info,
     release_download_lock,
     validate_download,
@@ -168,6 +172,30 @@ class RetryHandler(BaseHTTPRequestHandler):
 
 
 class DownloadFileTests(unittest.TestCase):
+    def test_reads_and_enforces_text_manifest_package_identity(self) -> None:
+        manifest = b'<manifest package="com.example.target"></manifest>'
+        self.assertEqual(
+            inspect_manifest_package_name(manifest),
+            "com.example.target",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "site-installer.apk"
+            output.write_bytes(
+                package_bytes(
+                    {
+                        "AndroidManifest.xml": manifest,
+                        "classes.dex": b"installer",
+                    }
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "identity mismatch"):
+                validate_download(
+                    output,
+                    ".apk",
+                    "application/vnd.android.package-archive",
+                    expected_package="com.example.requested",
+                )
+
     def test_reads_binary_manifest_required_split_declarations(self) -> None:
         split_info = inspect_manifest_split_info(binary_split_manifest())
 
@@ -176,6 +204,71 @@ class DownloadFileTests(unittest.TestCase):
             frozenset({"base__abi", "base__density"}),
         )
         self.assertTrue(split_info.splits_required)
+
+    def test_rejects_tv_only_apk_by_default(self) -> None:
+        manifest = b"""\
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-feature android:name="android.software.leanback" android:required="true" />
+</manifest>
+"""
+        platform = inspect_manifest_platform_info(manifest)
+        self.assertTrue(platform.tv_only)
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "tv.apk"
+            output.write_bytes(
+                package_bytes(
+                    {
+                        "AndroidManifest.xml": manifest,
+                        "classes.dex": b"tv-only",
+                    }
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "requires Android TV"):
+                validate_download(
+                    output,
+                    ".apk",
+                    "application/vnd.android.package-archive",
+                )
+
+            validate_download(
+                output,
+                ".apk",
+                "application/vnd.android.package-archive",
+                allow_tv=True,
+            )
+
+    def test_rejects_tv_only_xapk_by_default(self) -> None:
+        manifest = b"""\
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-feature android:name="android.software.leanback" />
+</manifest>
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "tv.xapk"
+            output.write_bytes(
+                package_bytes(
+                    {
+                        "base.apk": package_bytes(
+                            {
+                                "AndroidManifest.xml": manifest,
+                                "classes.dex": b"tv-only",
+                            }
+                        )
+                    }
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "phone/tablet build"):
+                validate_download(output, ".xapk", "application/octet-stream")
+
+    def test_accepts_mobile_app_with_optional_leanback_support(self) -> None:
+        manifest = b"""\
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-feature android:name="android.software.leanback" android:required="false" />
+</manifest>
+"""
+        platform = inspect_manifest_platform_info(manifest)
+        self.assertFalse(platform.tv_only)
 
     def test_target_lock_rejects_concurrent_writer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -284,6 +377,54 @@ class DownloadFileTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    def test_retry_without_partial_keeps_using_urllib(self) -> None:
+        calls = 0
+
+        def fake_download_once(
+            url: str, temporary: Path, timeout: float, suffix: str
+        ) -> tuple[str, str, int]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise download_module.URLError("transient TLS failure")
+            temporary.write_bytes(RetryHandler.payload)
+            return (
+                url,
+                "application/vnd.android.package-archive",
+                len(RetryHandler.payload),
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "sample.apk"
+            with (
+                patch.object(download_module, "download_once", fake_download_once),
+                patch.object(
+                    download_module,
+                    "download_with_curl",
+                    side_effect=AssertionError(
+                        "curl should be reserved for resumable partial downloads"
+                    ),
+                ),
+                patch.object(download_module.shutil, "which", return_value="/usr/bin/curl"),
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "download_file.py",
+                        "https://example.test/sample.apk",
+                        str(output),
+                        "--timeout",
+                        "5",
+                        "--retries",
+                        "1",
+                    ],
+                ),
+            ):
+                self.assertEqual(download_module.main(), 0)
+
+            self.assertEqual(calls, 2)
+            self.assertEqual(output.read_bytes(), RetryHandler.payload)
+
     def test_rejects_html_saved_with_apk_suffix(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "fake.apk"
@@ -359,6 +500,39 @@ class DownloadFileTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 ValueError, "manifest-required density split"
+            ):
+                validate_download(output, ".xapk", "application/octet-stream")
+
+    def test_rejects_x86_only_split_archive_for_standard_phone(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "x86-only.xapk"
+            output.write_bytes(
+                package_bytes(
+                    {
+                        "base.apk": package_bytes(
+                            {
+                                "AndroidManifest.xml": binary_split_manifest(),
+                                "classes.dex": b"pure-java-app",
+                            }
+                        ),
+                        "config.x86_64.apk": package_bytes(
+                            {
+                                "AndroidManifest.xml": b"manifest",
+                                "resources.arsc": b"x86 resources",
+                            }
+                        ),
+                        "config.mdpi.apk": package_bytes(
+                            {
+                                "AndroidManifest.xml": b"manifest",
+                                "resources.arsc": b"density resources",
+                            }
+                        ),
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(
+                ValueError, "incompatible with standard ARM phones"
             ):
                 validate_download(output, ".xapk", "application/octet-stream")
 

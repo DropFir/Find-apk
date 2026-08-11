@@ -49,6 +49,16 @@ class DownloadSplitArchiveTests(unittest.TestCase):
             "config.arm64_v8a.apk",
         )
 
+    def test_accepts_aptoide_slug_for_package_with_underscores(self) -> None:
+        url = (
+            "https://pool.apk.aptoide.com/apps/"
+            "com-chani-nicholas-inc-chani-83-75359672-abc-config-x86-64.apk"
+        )
+        self.assertEqual(
+            component_filename(url, "com.chani_nicholas_inc.chani"),
+            "config.x86_64.apk",
+        )
+
     def test_rejects_aptoide_component_for_another_package(self) -> None:
         with self.assertRaisesRegex(ValueError, "expected package"):
             component_filename(

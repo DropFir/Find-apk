@@ -82,6 +82,26 @@ class AnalyzeSearchHtmlTests(unittest.TestCase):
         self.assertEqual(result.classification, "no_candidates")
         self.assertEqual(result.links, [])
 
+    def test_apkpure_net_search_finds_exact_package(self) -> None:
+        html = """
+        <a href="/skyview-lite/com.t11.skyviewfree">
+          SkyView Lite
+        </a>
+        """
+        result = analyze_search_html(
+            html,
+            "https://apkpure.net/search?q=SkyView+Lite",
+            "https://apkpure.net/search?q=SkyView+Lite",
+            200,
+            "com.t11.skyviewfree",
+        )
+
+        self.assertEqual(result.classification, "candidate_found")
+        self.assertEqual(
+            result.links,
+            ["https://apkpure.net/skyview-lite/com.t11.skyviewfree"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

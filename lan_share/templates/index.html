@@ -1,0 +1,816 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Find APK 管理台</title>
+    <meta
+      name="description"
+      content="管理局域网 APK 文件库和关键词查找任务"
+    />
+    <link rel="stylesheet" href="/static/styles.css?v=20260810-05" />
+    <script src="/static/app.js?v=20260811-01" defer></script>
+  </head>
+  <body>
+    <div class="admin-shell">
+      <aside class="sidebar">
+        <a class="brand" href="/" aria-label="Find APK 管理台">
+          <span class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </span>
+          <span>
+            <strong>Find APK</strong>
+            <small>局域网管理台</small>
+          </span>
+        </a>
+
+        <button
+          class="sidebar-toggle"
+          id="sidebar-toggle"
+          type="button"
+          aria-label="收起左侧栏"
+          aria-expanded="true"
+          title="收起左侧栏"
+        >
+          <span aria-hidden="true"></span>
+        </button>
+
+        <nav class="admin-nav" aria-label="主要功能" role="tablist">
+          <button
+            class="nav-tab is-active"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="library-view"
+            data-view="library"
+          >
+            <span class="nav-icon nav-icon-library" aria-hidden="true"></span>
+            <span class="nav-copy">
+              <strong>APK 搜索</strong>
+              <small>查找和下载已入库文件</small>
+            </span>
+          </button>
+          <button
+            class="nav-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="apkba-view"
+            data-view="apkba"
+          >
+            <span class="nav-icon nav-icon-apkba" aria-hidden="true"></span>
+            <span class="nav-copy">
+              <strong>APKBA 制作站</strong>
+              <small>查看制作进度和任务状态</small>
+            </span>
+          </button>
+          <button
+            class="nav-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="production-view"
+            data-view="production"
+          >
+            <span class="nav-icon nav-icon-production" aria-hidden="true"></span>
+            <span class="nav-copy">
+              <strong>每日制作队列</strong>
+              <small>两人分组领取完整交付包</small>
+            </span>
+            <span class="nav-count nav-count-production" id="production-nav-count" hidden>0</span>
+          </button>
+          <button
+            class="nav-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="queue-view"
+            data-view="queue"
+          >
+            <span class="nav-icon nav-icon-queue" aria-hidden="true"></span>
+            <span class="nav-copy">
+              <strong>关键词任务</strong>
+              <small>提交和查看查找进度</small>
+            </span>
+            <span class="nav-count" id="queue-nav-count" hidden>0</span>
+          </button>
+          <button
+            class="nav-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="codex-view"
+            data-view="codex"
+          >
+            <span class="nav-icon nav-icon-codex" aria-hidden="true"></span>
+            <span class="nav-copy">
+              <strong>Codex 调度</strong>
+              <small>定时领取关键词并自动寻找</small>
+            </span>
+          </button>
+          <button
+            class="nav-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="error-apk-view"
+            data-view="error-apk"
+          >
+            <span class="nav-icon nav-icon-errorapk" aria-hidden="true"></span>
+            <span class="nav-copy">
+              <strong>错误 APK</strong>
+              <small>提交问题 ZIP 和原因</small>
+            </span>
+            <span class="nav-count nav-count-muted" id="error-apk-nav-count" hidden>0</span>
+          </button>
+          <button
+            class="nav-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="notfound-view"
+            data-view="notfound"
+          >
+            <span class="nav-icon nav-icon-notfound" aria-hidden="true"></span>
+            <span class="nav-copy">
+              <strong>找不到 / 已跳过</strong>
+              <small>查看无结果、付费和原因</small>
+            </span>
+            <span class="nav-count nav-count-muted" id="notfound-nav-count" hidden>0</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-status">
+          <span class="status-dot"></span>
+          <span>
+            <small>文件库状态</small>
+            <strong id="status-text">正在连接服务…</strong>
+          </span>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="breadcrumb">Find APK / <span id="page-breadcrumb">文件库</span></p>
+            <h1 id="page-title">APK 搜索</h1>
+            <p id="page-description">搜索并下载完整交付包，内含安装包、图标、开发者和来源。</p>
+          </div>
+          <div class="topbar-status-group">
+            <div class="storage-pill" id="storage-pill" aria-live="polite">
+              <span class="storage-meter" aria-hidden="true">
+                <span id="storage-meter-fill"></span>
+              </span>
+              <span class="storage-copy">
+                <small>本机存储</small>
+                <strong id="storage-text">正在读取…</strong>
+              </span>
+            </div>
+            <div class="status-pill" id="status-pill" aria-live="polite">
+              <span class="status-dot"></span>
+              <span>服务在线</span>
+            </div>
+          </div>
+        </header>
+
+        <main class="content">
+          <section
+            class="view-panel is-active"
+            id="library-view"
+            role="tabpanel"
+            data-view-panel="library"
+          >
+            <div class="metric-grid">
+              <article class="metric-card metric-primary">
+                <div>
+                  <small>可下载应用</small>
+                  <strong id="library-total-count">—</strong>
+                </div>
+                <span>APK</span>
+              </article>
+              <article class="metric-card">
+                <div>
+                  <small>支持格式</small>
+                  <strong>4</strong>
+                </div>
+                <span>APK · XAPK · APKM · APKS</span>
+              </article>
+              <article class="metric-card">
+                <div>
+                  <small>访问范围</small>
+                  <strong>LAN</strong>
+                </div>
+                <span>仅限当前局域网</span>
+              </article>
+            </div>
+
+            <section class="admin-panel search-panel" aria-labelledby="search-panel-title">
+              <div class="panel-heading">
+                <div>
+                  <p class="panel-kicker">APK LIBRARY</p>
+                  <h2 id="search-panel-title">搜索安装包</h2>
+                  <p>支持应用名称、开发者和文件名；下载结果为完整 ZIP 交付包。</p>
+                </div>
+              </div>
+
+              <form class="search-box" id="search-form" role="search">
+                <span class="search-icon" aria-hidden="true"></span>
+                <label class="sr-only" for="search-input">搜索 APK 文件</label>
+                <input
+                  id="search-input"
+                  name="q"
+                  type="search"
+                  placeholder="输入应用关键词、开发者或文件名"
+                  autocomplete="off"
+                  autofocus
+                />
+                <button type="submit">搜索</button>
+              </form>
+            </section>
+
+            <section class="admin-panel result-panel" aria-labelledby="results-heading">
+              <div class="panel-heading result-heading">
+                <div>
+                  <p class="panel-kicker" id="section-kicker">APK LIBRARY</p>
+                  <h2 id="results-heading">最近入库</h2>
+                </div>
+                <p class="result-count" id="result-count"></p>
+              </div>
+
+              <div class="results-grid" id="results" aria-live="polite">
+                <div class="loading-card"><span></span><span></span><span></span></div>
+                <div class="loading-card"><span></span><span></span><span></span></div>
+                <div class="loading-card"><span></span><span></span><span></span></div>
+              </div>
+
+              <div class="empty-state" id="empty-state" hidden>
+                <div class="empty-mark" aria-hidden="true">⌕</div>
+                <h3>没有匹配的安装包</h3>
+                <p>可以切换到“关键词任务”，让 Agent 帮你查找。</p>
+                <button type="button" class="text-button" data-switch-view="queue">
+                  前往关键词任务
+                </button>
+              </div>
+            </section>
+          </section>
+
+          <section
+            class="view-panel apkba-view"
+            id="apkba-view"
+            role="tabpanel"
+            data-view-panel="apkba"
+            hidden
+          >
+            <div class="apkba-toolbar">
+              <div>
+                <strong>APKBA 制作站</strong>
+                <span>页面由 192.168.5.125:8088 实时提供</span>
+              </div>
+              <a
+                href="http://192.168.5.125:8088/"
+                target="_blank"
+                rel="noopener noreferrer"
+              >新窗口打开</a>
+            </div>
+            <iframe
+              class="apkba-frame"
+              src="/apkba-monitor"
+              title="APKBA 制作站"
+              loading="eager"
+            ></iframe>
+          </section>
+
+          <section
+            class="view-panel"
+            id="production-view"
+            role="tabpanel"
+            data-view-panel="production"
+            hidden
+          >
+            <div class="metric-grid production-metrics" aria-label="每日制作队列状态">
+              <article class="metric-card metric-primary">
+                <div>
+                  <small>今天日期</small>
+                  <strong class="production-date" id="production-date">—</strong>
+                </div>
+                <span>两列日期可单独切换</span>
+              </article>
+              <article class="metric-card">
+                <div>
+                  <small>今日总数</small>
+                  <strong id="production-total-count">0</strong>
+                </div>
+                <span id="production-today-detail">未完成会自动顺延</span>
+              </article>
+              <article class="metric-card">
+                <div>
+                  <small>昨天总数</small>
+                  <strong id="production-yesterday-count">0</strong>
+                </div>
+                <span id="production-yesterday-detail">A 组 0 · B 组 0</span>
+              </article>
+            </div>
+
+            <section class="admin-panel production-board" aria-labelledby="production-title">
+              <div class="panel-heading production-heading">
+                <div>
+                  <p class="panel-kicker">DAILY PRODUCTION</p>
+                  <h2 id="production-title">双人制作队列</h2>
+                  <p>A 组和 B 组数量自动均衡；每人负责一列，避免重复制作。</p>
+                </div>
+                <div class="production-heading-actions">
+                  <div class="schedule-state production-live-state">
+                    <span class="schedule-state-dot"></span>
+                    <span id="production-monitor-state">正在连接制作网站…</span>
+                  </div>
+                </div>
+              </div>
+
+              <section class="production-storage" aria-label="本机存储管理">
+                <div class="production-storage-copy">
+                  <p class="panel-kicker">LOCAL STORAGE</p>
+                  <h3>已领取的本机交付包</h3>
+                  <p id="production-storage-detail">正在统计实际占用空间…</p>
+                </div>
+                <div class="production-storage-summary">
+                  <strong id="production-storage-space">正在统计…</strong>
+                  <span id="production-temporary-bundles">临时下载 ZIP：读取中…</span>
+                </div>
+                <button
+                  class="production-cleanup-button"
+                  id="production-cleanup-button"
+                  type="button"
+                  disabled
+                >没有可释放的交付包</button>
+              </section>
+
+              <div class="production-lanes">
+                <section class="production-lane" aria-labelledby="production-lane-a-title">
+                  <header>
+                    <div>
+                      <span class="lane-letter lane-a">A</span>
+                      <div>
+                        <h3 id="production-lane-a-title">A 组</h3>
+                        <p>第一位制作人员</p>
+                      </div>
+                    </div>
+                    <strong id="production-lane-a-count">0</strong>
+                  </header>
+                  <div class="production-date-switcher">
+                    <button type="button" data-production-date-step="1" data-direction="-1" aria-label="A 组查看前一天">‹</button>
+                    <label>
+                      <span>A 组日期</span>
+                      <input type="date" id="production-lane-a-date" />
+                    </label>
+                    <button type="button" data-production-date-step="1" data-direction="1" aria-label="A 组查看后一天">›</button>
+                    <small>昨天 <strong id="production-lane-a-yesterday">0</strong> 个</small>
+                  </div>
+                  <div class="production-list" id="production-lane-a" aria-live="polite">
+                    <p class="production-placeholder">正在读取今日队列…</p>
+                  </div>
+                </section>
+
+                <section class="production-lane" aria-labelledby="production-lane-b-title">
+                  <header>
+                    <div>
+                      <span class="lane-letter lane-b">B</span>
+                      <div>
+                        <h3 id="production-lane-b-title">B 组</h3>
+                        <p>第二位制作人员</p>
+                      </div>
+                    </div>
+                    <strong id="production-lane-b-count">0</strong>
+                  </header>
+                  <div class="production-date-switcher">
+                    <button type="button" data-production-date-step="2" data-direction="-1" aria-label="B 组查看前一天">‹</button>
+                    <label>
+                      <span>B 组日期</span>
+                      <input type="date" id="production-lane-b-date" />
+                    </label>
+                    <button type="button" data-production-date-step="2" data-direction="1" aria-label="B 组查看后一天">›</button>
+                    <small>昨天 <strong id="production-lane-b-yesterday">0</strong> 个</small>
+                  </div>
+                  <div class="production-list" id="production-lane-b" aria-live="polite">
+                    <p class="production-placeholder">正在读取今日队列…</p>
+                  </div>
+                </section>
+              </div>
+
+              <p class="production-note">
+                ZIP 下载包只是临时生成，传输完成会自动删除。这里的“释放本机空间”会永久删除已领取交付包中的 APK/XAPK、图标和来源文件；制作网站、关键词记录、待下载及网站已完成条目不会受影响。今天未完成的项目会保留原分组并自动进入明天的队列。
+              </p>
+            </section>
+          </section>
+
+          <section
+            class="view-panel"
+            id="queue-view"
+            role="tabpanel"
+            data-view-panel="queue"
+            hidden
+          >
+            <div class="metric-grid queue-metrics" aria-label="关键词队列状态">
+              <article class="metric-card">
+                <div>
+                  <small>等待处理</small>
+                  <strong id="queue-waiting-count">0</strong>
+                </div>
+                <span>Pending</span>
+              </article>
+              <article class="metric-card metric-warning">
+                <div>
+                  <small>正在寻找</small>
+                  <strong id="queue-processing-count">0</strong>
+                </div>
+                <span>Processing</span>
+              </article>
+              <article class="metric-card metric-success">
+                <div>
+                  <small>已经完成</small>
+                  <strong id="queue-completed-count">0</strong>
+                </div>
+                <span>Completed</span>
+              </article>
+            </div>
+
+            <div class="queue-layout">
+              <form class="admin-panel queue-form" id="queue-form">
+                <div class="panel-heading">
+                  <div>
+                    <p class="panel-kicker">NEW REQUEST</p>
+                    <h2>添加关键词</h2>
+                    <p>每行输入一个应用名称，可以一次批量提交。</p>
+                  </div>
+                </div>
+
+                <label for="keyword-input">APK 关键词</label>
+                <textarea
+                  id="keyword-input"
+                  name="keywords"
+                  rows="9"
+                  maxlength="30000"
+                  placeholder="例如：&#10;Google Maps&#10;Spotify&#10;DTA Connect"
+                ></textarea>
+                <button class="primary-button queue-submit" type="submit" id="queue-add-button">
+                  加入关键词队列
+                </button>
+                <p class="queue-message" id="queue-message" aria-live="polite">
+                  重复的待处理关键词不会再次加入；Codex 每 30 分钟自动读取队列。
+                </p>
+              </form>
+
+              <section class="admin-panel queue-board" aria-labelledby="queue-list-title">
+                <div class="panel-heading queue-board-heading">
+                  <div>
+                    <p class="panel-kicker">TASK QUEUE</p>
+                    <h2 id="queue-list-title">任务队列</h2>
+                    <p>按提交时间排序，自动同步最新状态。</p>
+                  </div>
+                  <div class="schedule-state">
+                    <span class="schedule-state-dot"></span>
+                    <span>Codex 每 30 分钟自动读取</span>
+                  </div>
+                </div>
+                <div class="queue-table-wrap">
+                  <table class="queue-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">ID</th>
+                        <th scope="col">关键词</th>
+                        <th scope="col">状态</th>
+                        <th scope="col">提交时间</th>
+                        <th scope="col">开始时间</th>
+                        <th scope="col">查找耗时</th>
+                        <th scope="col">尝试</th>
+                        <th scope="col">结果 / 备注</th>
+                      </tr>
+                    </thead>
+                    <tbody id="queue-list" aria-live="polite">
+                      <tr>
+                        <td class="queue-placeholder" colspan="8">正在读取关键词队列…</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="table-pagination">
+                  <span id="queue-page-summary">第 1 页</span>
+                  <div>
+                    <button type="button" id="queue-page-prev">上一页</button>
+                    <button type="button" id="queue-page-next">下一页</button>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <section
+            class="view-panel"
+            id="codex-view"
+            role="tabpanel"
+            data-view-panel="codex"
+            hidden
+          >
+            <div class="metric-grid codex-metrics" aria-label="Codex 调度状态">
+              <article class="metric-card metric-primary">
+                <div>
+                  <small>自动调度</small>
+                  <strong id="codex-enabled-state">读取中</strong>
+                </div>
+                <span id="codex-next-run">等待设置</span>
+              </article>
+              <article class="metric-card">
+                <div>
+                  <small>运行中的 Agent</small>
+                  <strong id="codex-running-count">0</strong>
+                </div>
+                <span>最多 4 个，不会重复领取</span>
+              </article>
+              <article class="metric-card">
+                <div>
+                  <small>本批待处理</small>
+                  <strong id="codex-batch-summary">—</strong>
+                </div>
+                  <span>每词独立任务</span>
+              </article>
+              <article class="metric-card">
+                <div>
+                  <small>专用 Chrome</small>
+                  <strong id="browser-worker-state">读取中</strong>
+                </div>
+                <span id="browser-worker-detail">等待浏览器状态</span>
+              </article>
+            </div>
+
+            <section class="admin-panel codex-board" aria-labelledby="codex-title">
+              <div class="panel-heading">
+                <div>
+                  <p class="panel-kicker">CODEX CONTROLLER</p>
+                  <h2 id="codex-title">本机 Codex 调度中心</h2>
+                  <p>由本机 Codex 自动领取关键词任务；正在运行的任务不会被定时器替换。</p>
+                </div>
+                <div class="schedule-state" id="codex-server-state">
+                  <span class="schedule-state-dot"></span>
+                  <span>正在读取 Codex 状态…</span>
+                </div>
+              </div>
+
+              <form class="codex-settings" id="codex-settings-form">
+                <label class="codex-toggle">
+                  <input id="codex-enabled" type="checkbox" />
+                  <span>
+                    <strong>开启定时领取</strong>
+                    <small>空闲的 Agent 才会在下一次时间点开始</small>
+                  </span>
+                </label>
+                <label>
+                  <span>模型</span>
+                  <select id="codex-model">
+                    <option value="gpt-5.6-terra">GPT-5.6 Terra</option>
+                    <option value="gpt-5.6-sol">GPT-5.6 Sol</option>
+                    <option value="gpt-5.6-luna" selected>GPT-5.6 Luna</option>
+                  </select>
+                </label>
+                <label>
+                  <span>思考强度</span>
+                  <select id="codex-effort">
+                    <option value="low">低</option>
+                    <option value="medium">中等</option>
+                    <option value="high">高</option>
+                    <option value="xhigh">超高</option>
+                    <option value="max" selected>最高</option>
+                  </select>
+                </label>
+                <label>
+                  <span>间隔（分钟）</span>
+                  <input id="codex-interval" type="number" min="10" max="720" value="30" />
+                </label>
+                <label>
+                  <span>本次总关键词数</span>
+                  <input id="codex-batch-size" type="number" min="1" max="10" value="5" />
+                </label>
+                <label>
+                  <span>同时运行</span>
+                  <select id="codex-worker-count">
+                    <option value="1">1 个 Agent</option>
+                    <option value="2">2 个 Agent</option>
+                    <option value="3">3 个 Agent</option>
+                    <option value="4" selected>4 个 Agent</option>
+                  </select>
+                </label>
+                <div class="codex-actions">
+                  <button class="secondary-button" type="submit" id="codex-save-button">保存设置</button>
+                  <button class="primary-button" type="button" id="codex-run-button">立即领取并开始</button>
+                  <button class="danger-button" type="button" id="codex-stop-button">停止当前批次</button>
+                </div>
+              </form>
+
+              <div class="codex-message" id="codex-message" role="status"></div>
+              <div class="codex-workers" id="codex-workers" aria-live="polite">
+                <p class="production-placeholder">正在读取本机 Codex…</p>
+              </div>
+              <p class="production-note">
+                控制服务只运行在这台 Mac 上；它使用当前 Codex 登录状态和仓库内的 AGENTS.md 规则。停止只中断当前批次，已领取但未完成的关键词会保留在队列，下一次可以继续处理。
+              </p>
+            </section>
+          </section>
+
+          <section
+            class="view-panel"
+            id="error-apk-view"
+            role="tabpanel"
+            data-view-panel="error-apk"
+            hidden
+          >
+            <div class="metric-grid error-apk-metrics" aria-label="错误 APK 提交状态">
+              <article class="metric-card metric-danger">
+                <div>
+                  <small>问题包总数</small>
+                  <strong id="error-apk-total-count">0</strong>
+                </div>
+                <span>等待本机检查</span>
+              </article>
+              <article class="metric-card">
+                <div>
+                  <small>接收格式</small>
+                  <strong>ZIP</strong>
+                </div>
+                <span>包含问题 APK 和相关文件</span>
+              </article>
+              <article class="metric-card">
+                <div>
+                  <small>单文件上限</small>
+                  <strong>6 GB</strong>
+                </div>
+                <span>上传时保留至少 2 GB 空间</span>
+              </article>
+            </div>
+
+            <div class="error-apk-layout">
+              <form class="admin-panel error-apk-form" id="error-apk-form">
+                <div class="panel-heading">
+                  <div>
+                    <p class="panel-kicker">PROBLEM PACKAGE</p>
+                    <h2>提交错误 APK</h2>
+                    <p>拖入出现问题的完整 ZIP，并填写安装失败或内容错误的原因。</p>
+                  </div>
+                </div>
+
+                <input
+                  id="error-apk-file-input"
+                  type="file"
+                  accept=".zip,application/zip"
+                  hidden
+                />
+                <div
+                  class="error-apk-dropzone"
+                  id="error-apk-dropzone"
+                  role="button"
+                  tabindex="0"
+                  aria-label="选择或拖入问题 ZIP"
+                >
+                  <span class="error-apk-drop-icon" aria-hidden="true">ZIP</span>
+                  <strong>拖入问题 ZIP</strong>
+                  <small>或者点击这里选择文件</small>
+                </div>
+                <p class="error-apk-selected" id="error-apk-selected">
+                  尚未选择文件
+                </p>
+
+                <label for="error-apk-reason">问题原因</label>
+                <textarea
+                  id="error-apk-reason"
+                  rows="6"
+                  maxlength="2000"
+                  placeholder="例如：安装时提示缺少 ARM64 分包；应用版本和截图不一致；压缩包内缺少来源文件。"
+                ></textarea>
+                <button class="primary-button" type="submit" id="error-apk-submit">
+                  提交问题包
+                </button>
+                <p class="queue-message" id="error-apk-message" aria-live="polite">
+                  文件会保存在这台电脑上，供后续重新检查。
+                </p>
+              </form>
+
+              <section class="admin-panel error-apk-board" aria-labelledby="error-apk-list-title">
+                <div class="panel-heading">
+                  <div>
+                    <p class="panel-kicker">PROBLEM LIST</p>
+                    <h2 id="error-apk-list-title">已提交的问题包</h2>
+                    <p>按提交时间倒序排列，可重新下载原始 ZIP 进行检查。</p>
+                  </div>
+                </div>
+                <div class="error-apk-list" id="error-apk-list" aria-live="polite">
+                  <p class="queue-placeholder">正在读取问题包…</p>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <section
+            class="view-panel"
+            id="notfound-view"
+            role="tabpanel"
+            data-view-panel="notfound"
+            hidden
+          >
+            <div class="metric-grid notfound-metrics" aria-label="找不到的 APK 状态">
+              <article class="metric-card metric-danger">
+                <div>
+                  <small>待人工确认</small>
+                  <strong id="notfound-missing-count">0</strong>
+                </div>
+                <span>无结果与付费跳过</span>
+              </article>
+              <article class="metric-card">
+                <div>
+                  <small>iOS 应用</small>
+                  <strong id="notfound-ios-count">0</strong>
+                </div>
+                <span>确认只有 iOS 版本</span>
+              </article>
+              <article class="metric-card">
+                <div>
+                  <small>付费应用</small>
+                  <strong id="notfound-paid-count">0</strong>
+                </div>
+                <span>人工确认需要购买</span>
+              </article>
+              <article class="metric-card metric-success">
+                <div>
+                  <small>找不到</small>
+                  <strong id="notfound-manual-count">0</strong>
+                </div>
+                <span>人工确认没有 Android 包</span>
+              </article>
+            </div>
+
+            <section class="admin-panel queue-board notfound-board" aria-labelledby="notfound-list-title">
+              <div class="panel-heading queue-board-heading">
+                <div>
+                  <p class="panel-kicker">NOT FOUND APK</p>
+                  <h2 id="notfound-list-title">找不到与已跳过的 APK</h2>
+                  <p>编辑最终原因后，归类为 iOS 应用、付费应用或找不到。</p>
+                </div>
+              </div>
+              <div class="notfound-view-switch" role="group" aria-label="找不到记录分类">
+                <button type="button" class="is-active" data-notfound-mode="pending">
+                  待人工确认
+                </button>
+                <button type="button" data-notfound-mode="ios">
+                  iOS 应用
+                </button>
+                <button type="button" data-notfound-mode="paid">
+                  付费应用
+                </button>
+                <button type="button" data-notfound-mode="not_found">
+                  找不到
+                </button>
+              </div>
+              <form class="search-box notfound-search-box" id="notfound-search-form" role="search">
+                <span class="search-icon" aria-hidden="true"></span>
+                <label class="sr-only" for="notfound-search-input">搜索已跳过关键词</label>
+                <input
+                  id="notfound-search-input"
+                  name="q"
+                  type="search"
+                  placeholder="搜索找不到或已跳过的 APK 关键词"
+                  autocomplete="off"
+                />
+                <button type="submit">搜索</button>
+              </form>
+              <div class="queue-table-wrap">
+                <table class="queue-table notfound-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">ID</th>
+                      <th scope="col">关键词</th>
+                      <th scope="col">跳过类型</th>
+                      <th scope="col">完成时间</th>
+                      <th scope="col">搜索轮数</th>
+                      <th scope="col">领取次数</th>
+                      <th scope="col">最终原因</th>
+                      <th scope="col">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="notfound-list" aria-live="polite">
+                    <tr>
+                      <td class="queue-placeholder" colspan="8">正在读取跳过记录…</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="table-pagination">
+                <span id="notfound-page-summary">第 1 页</span>
+                <div>
+                  <button type="button" id="notfound-page-prev">上一页</button>
+                  <button type="button" id="notfound-page-next">下一页</button>
+                </div>
+              </div>
+            </section>
+          </section>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

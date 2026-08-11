@@ -25,8 +25,11 @@ faker_expected_commit="5b0f2a4759d7b84c36e37afbe5c2e6400706b6c6"
 faker_launch_label="com.dropfir.findapk.cloudflare-faker"
 faker_launch_domain="gui/$(id -u)"
 
+faker_python="$faker_agent_root/.venv/bin/python"
+faker_service_manager="$faker_script_dir/cloudflare_faker_service.py"
+
 faker_usage() {
-    echo "Usage: $0 {build|start|stop|restart|status|check|log|extension-path}" >&2
+    echo "Usage: $0 {build|install|start|stop|restart|uninstall|status|check|log|extension-path}" >&2
 }
 
 faker_read_pid() {
@@ -71,6 +74,17 @@ faker_require_files() {
     fi
 }
 
+faker_compatibility_patch_is_present() {
+    grep -q 'ResponseManager.prepareResponse' \
+        "$faker_project/src/main/java/com/guoshengkai/cloudflarefaker/controller/ApiController.java" &&
+    grep -q 'hasPendingResponses' \
+        "$faker_project/src/main/java/com/guoshengkai/cloudflarefaker/websocket/ResponseManager.java" &&
+    grep -q 'data == null' \
+        "$faker_project/src/main/java/com/guoshengkai/cloudflarefaker/websocket/controller/TaskController.java" &&
+    grep -q '!ResponseManager.hasPendingResponses' \
+        "$faker_project/src/main/java/com/guoshengkai/cloudflarefaker/robot/CloudflareRobotManager.java"
+}
+
 faker_status() {
     if ! faker_pid_is_service; then
         echo "Cloudflare-Faker is stopped"
@@ -107,21 +121,15 @@ faker_check() {
             return 4
             ;;
         *)
-            faker_health_response=$(curl -fsS --max-time 10 \
-                -H 'Content-Type: application/json' \
-                -X POST "http://$faker_address:$faker_port/api/remote-html" \
-                --data-binary '{"pageUrl":"http://127.0.0.1:8080/","script":"","type":"LOAD_HTML"}' \
-                2>/dev/null || true)
-            case "$faker_health_response" in
-                *'"html":'*'Cloudflare-Faker Dashboard'*)
-                    echo "Cloudflare-Faker Chrome extension is connected and executable"
-                    ;;
-                *)
-                    echo "Cloudflare-Faker Chrome extension is connected but failed the execution check" >&2
-                    printf '%s\n' "$faker_health_response" | cut -c 1-500 >&2
-                    return 5
-                    ;;
-            esac
+            if [ ! -x "$faker_python" ]; then
+                echo "Project Python is missing: $faker_python" >&2
+                return 5
+            fi
+            if ! "$faker_python" "$faker_script_dir/cloudflare_faker_client.py" \
+                --check --timeout 45; then
+                echo "Cloudflare-Faker Chrome extension is connected but failed the execution check" >&2
+                return 5
+            fi
             ;;
     esac
 }
@@ -145,6 +153,10 @@ faker_build() {
         :
     elif git -C "$faker_project" apply --check "$faker_patch" >/dev/null 2>&1; then
         git -C "$faker_project" apply "$faker_patch"
+    elif faker_compatibility_patch_is_present; then
+        # The compatibility patch is present together with additional local
+        # fixes, so an exact reverse-apply check is expected to fail.
+        :
     else
         echo "Cloudflare-Faker local compatibility patch cannot be applied cleanly" >&2
         exit 1
@@ -157,26 +169,26 @@ faker_build() {
 faker_start() {
     faker_require_files
     mkdir -p "$faker_runtime"
-    if faker_pid_is_service; then
-        faker_status
-        return 0
-    fi
-    if launchctl print "$faker_launch_domain/$faker_launch_label" >/dev/null 2>&1; then
-        launchctl remove "$faker_launch_label" || true
-        sleep 1
-    fi
-    if faker_read_pid; then
-        rm -f "$faker_pid_file"
-    fi
-    if lsof -nP -iTCP:"$faker_port" -sTCP:LISTEN 2>/dev/null | grep -q .; then
-        echo "Port $faker_port is already in use; Cloudflare-Faker was not started" >&2
+    if [ ! -x "$faker_python" ]; then
+        echo "Project Python is missing: $faker_python" >&2
         exit 1
     fi
-
-    launchctl submit -l "$faker_launch_label" \
-        -o "$faker_log_file" -e "$faker_error_log" -- \
-        "$faker_java" -jar "$faker_jar" \
-        --server.address="$faker_address" --server.port="$faker_port"
+    if faker_pid_is_service; then
+        if [ -f "$HOME/Library/LaunchAgents/$faker_launch_label.plist" ]; then
+            faker_status
+            return 0
+        fi
+        "$faker_python" "$faker_service_manager" install
+    else
+        if faker_read_pid; then
+            rm -f "$faker_pid_file"
+        fi
+        if lsof -nP -iTCP:"$faker_port" -sTCP:LISTEN 2>/dev/null | grep -q .; then
+            echo "Port $faker_port is already in use; Cloudflare-Faker was not started" >&2
+            exit 1
+        fi
+        "$faker_python" "$faker_service_manager" start
+    fi
 
     faker_waited=0
     while [ "$faker_waited" -lt 45 ]; do
@@ -199,12 +211,13 @@ faker_start() {
 }
 
 faker_stop() {
-    if ! faker_pid_is_service; then
+    if ! faker_pid_is_service && \
+        ! launchctl print "$faker_launch_domain/$faker_launch_label" >/dev/null 2>&1; then
         echo "Cloudflare-Faker is already stopped"
         rm -f "$faker_pid_file"
         return 0
     fi
-    launchctl remove "$faker_launch_label"
+    "$faker_python" "$faker_service_manager" stop
     faker_waited=0
     while kill -0 "$faker_pid" 2>/dev/null && [ "$faker_waited" -lt 10 ]; do
         sleep 1
@@ -218,12 +231,25 @@ faker_stop() {
     echo "Cloudflare-Faker stopped"
 }
 
+faker_install() {
+    faker_require_files
+    "$faker_python" "$faker_service_manager" install
+    faker_start
+}
+
+faker_uninstall() {
+    "$faker_python" "$faker_service_manager" uninstall
+    rm -f "$faker_pid_file"
+}
+
 faker_action=${1:-}
 case "$faker_action" in
     build) faker_build ;;
+    install) faker_install ;;
     start) faker_start ;;
     stop) faker_stop ;;
     restart) faker_stop; faker_start ;;
+    uninstall) faker_uninstall ;;
     status) faker_status ;;
     check) faker_check ;;
     log) tail -n 80 "$faker_log_file"; tail -n 80 "$faker_error_log" ;;

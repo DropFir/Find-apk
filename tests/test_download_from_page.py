@@ -22,7 +22,11 @@ from download_from_page import (  # noqa: E402
     apkpure_cdn_candidate_urls,
     apkpure_cdn_detected_version,
     apkpure_download_page_url,
+    browser_download_candidate_priority,
     resolve_download_page,
+    save_browser_download,
+    save_persistent_browser_download,
+    softonic_download_page_url,
 )
 from extract_download_link import PageResult  # noqa: E402
 
@@ -30,7 +34,10 @@ from extract_download_link import PageResult  # noqa: E402
 def package_page_payload() -> bytes:
     base = io.BytesIO()
     with zipfile.ZipFile(base, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("AndroidManifest.xml", b"manifest")
+        archive.writestr(
+            "AndroidManifest.xml",
+            b'<manifest package="com.example.app"></manifest>',
+        )
         archive.writestr("classes.dex", b"pure-java")
     outer = io.BytesIO()
     with zipfile.ZipFile(outer, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -69,6 +76,54 @@ class PackagePageHandler(BaseHTTPRequestHandler):
 
 
 class DownloadFromPageTests(unittest.TestCase):
+    def test_softonic_detail_automatically_transitions_to_download_page(self) -> None:
+        package = "com.hellotalk.aigrammar"
+        detail_url = "https://ai-grammar-checker-for-english.en.softonic.com/android"
+        download_page_url = f"{detail_url}/download"
+        target_url = (
+            "https://en.softonic.com/download/ai-grammar-checker-for-english/"
+            "android/post-download?dt=internalDownload"
+        )
+        pages = {
+            detail_url: PageResult(
+                200,
+                detail_url,
+                "text/html",
+                f"<html>{package} Version 1.6.25 <button>Download</button></html>",
+            ),
+            download_page_url: PageResult(
+                200,
+                download_page_url,
+                "text/html",
+                f'<html>{package} Version 1.6.25 '
+                f'<a href="{target_url}">Free XAPK Download</a></html>',
+            ),
+        }
+
+        with patch(
+            "download_from_page.fetch_page",
+            side_effect=lambda url, timeout: pages[url],
+        ) as mocked:
+            page, analysis, transition = resolve_download_page(
+                detail_url,
+                package,
+                "1.6.25",
+                20,
+            )
+
+        self.assertEqual(mocked.call_count, 2)
+        self.assertEqual(transition, download_page_url)
+        self.assertEqual(page.final_url, download_page_url)
+        self.assertEqual(analysis.classification, "download_link")
+        self.assertEqual(analysis.links, [target_url])
+
+    def test_softonic_download_page_is_not_transitioned_twice(self) -> None:
+        self.assertIsNone(
+            softonic_download_page_url(
+                "https://ai-grammar-checker-for-english.en.softonic.com/android/download"
+            )
+        )
+
     def test_apkpure_apk_probe_rejects_xapk_redirect(self) -> None:
         package = "com.swiftappskom.thetigerrpg"
         final_url = (
@@ -284,6 +339,79 @@ class DownloadFromPageTests(unittest.TestCase):
             "package_name=jp.pokemon.pokemonunite"
         )
         self.assertEqual(apkpure_cdn_detected_version(url), "1.23.1.7")
+
+    def test_browser_download_prefers_arm64_variant(self) -> None:
+        urls = [
+            "https://d.apkpure.com/b/XAPK/app.package?version=latest",
+            "https://d.apkpure.com/b/XAPK/app.package?nc=armeabi-v7a",
+            "https://d.apkpure.com/b/XAPK/app.package?nc=arm64-v8a",
+        ]
+        self.assertIn(
+            "arm64-v8a",
+            sorted(urls, key=browser_download_candidate_priority)[0],
+        )
+
+    def test_browser_download_is_validated_and_moved_to_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            chrome_file = root / "chrome-download.xapk"
+            chrome_file.write_bytes(b"PK\x03\x04package")
+            output = root / "delivery" / "application.xapk"
+            with (
+                patch(
+                    "download_from_page.download_package_with_browser",
+                    return_value=(chrome_file, "https://cdn.example/file.xapk", 11),
+                ),
+                patch("download_from_page.validate_download") as validate,
+            ):
+                final_url, byte_count = save_browser_download(
+                    "https://apkpure.com/app/app.package/download",
+                    "https://d.apkpure.com/b/XAPK/app.package?version=latest",
+                    output,
+                    "app.package",
+                )
+
+            self.assertTrue(output.is_file())
+            self.assertFalse(chrome_file.exists())
+            self.assertEqual(final_url, "https://cdn.example/file.xapk")
+            self.assertEqual(byte_count, 11)
+            validate.assert_called_once()
+            self.assertEqual(
+                (output.parent / "source.txt").read_text(encoding="utf-8"),
+                "https://apkpure.com/app/app.package/download\n",
+            )
+
+    def test_persistent_browser_download_is_validated_and_moved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            chrome_file = root / "persistent-download.xapk"
+            chrome_file.write_bytes(b"PK\x03\x04package")
+            output = root / "delivery" / "application.xapk"
+            with (
+                patch(
+                    "download_from_page.download_package_with_persistent_browser",
+                    return_value=(chrome_file, "https://cdn.example/file.xapk", 11),
+                ) as browser_download,
+                patch("download_from_page.validate_download") as validate,
+            ):
+                final_url, byte_count = save_persistent_browser_download(
+                    "https://apkpure.com/app/app.package/download",
+                    "https://d.apkpure.com/b/XAPK/app.package?version=latest",
+                    output,
+                    "app.package",
+                )
+
+            self.assertTrue(output.is_file())
+            self.assertFalse(chrome_file.exists())
+            self.assertEqual(final_url, "https://cdn.example/file.xapk")
+            self.assertEqual(byte_count, 11)
+            browser_download.assert_called_once_with(
+                "https://apkpure.com/app/app.package/download",
+                "https://d.apkpure.com/b/XAPK/app.package?version=latest",
+                suffix=".xapk",
+                timeout=960,
+            )
+            validate.assert_called_once()
 
     def test_exact_apkpure_cloudflare_page_can_use_public_cdn(self) -> None:
         package = "jp.pokemon.pokemonunite"

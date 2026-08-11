@@ -13,7 +13,7 @@ import sys
 import time
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from http_headers import BROWSER_NAVIGATION_HEADERS
@@ -38,12 +38,32 @@ APKCOMBO_BROWSER_REQUIRED_MARKERS = (
     "downloading. just a sec",
     "sorry, something went wrong",
 )
+SOFTONIC_BROWSER_REQUIRED_MARKERS = ("client challenge",)
 APKPURE_DOWNLOAD_HOSTS = {
     "d.apkpure.com",
     "d.apkpure.net",
     "download.apkpure.com",
     "download.pureapk.com",
 }
+PACKAGE_SUFFIXES = {".apk", ".xapk", ".apkm", ".apks"}
+
+
+def apkpure_link_matches_package(url: str, expected_package: str) -> bool:
+    """Reject APKPure's promotional site-installer links for another package."""
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").casefold()
+    if hostname not in APKPURE_DOWNLOAD_HOSTS:
+        return True
+    expected = expected_package.casefold()
+    decoded_path = unquote(parsed.path).casefold()
+    if expected in decoded_path:
+        return True
+    package_names = parse_qs(parsed.query).get("package_name", [])
+    if any(value.casefold() == expected for value in package_names):
+        return True
+    # APKPure download pages commonly advertise its own APKPure client from a
+    # /custom/ URL next to the requested app.  It is not an app candidate.
+    return not decoded_path.startswith("/custom/")
 
 
 @dataclass
@@ -108,10 +128,26 @@ class DownloadPageParser(HTMLParser):
         href = attributes.get("href", "")
         is_variant = "variant" in class_names
         is_signed_redirect = href.startswith(("/r2?u=", "/d?u="))
-        download_host = (urlparse(href).hostname or "").lower()
+        parsed_href = urlparse(href)
+        download_host = (parsed_href.hostname or "").lower()
         is_apkpure_download = download_host in APKPURE_DOWNLOAD_HOSTS
+        decoded_path = unquote(parsed_href.path).casefold()
+        is_direct_package = any(
+            decoded_path.endswith(suffix) for suffix in PACKAGE_SUFFIXES
+        )
+        is_softonic_target = (
+            download_host in {"softonic.com", "www.softonic.com", "en.softonic.com"}
+            and parsed_href.path.casefold().startswith("/download/")
+            and parsed_href.path.casefold().endswith("/android/post-download")
+            and parse_qs(parsed_href.query).get("dt") == ["internalDownload"]
+            and "softonic-helper" not in parsed_href.path.casefold()
+        )
         if tag == "a" and href and (
-            is_variant or is_signed_redirect or is_apkpure_download
+            is_variant
+            or is_signed_redirect
+            or is_apkpure_download
+            or is_direct_package
+            or is_softonic_target
         ):
             self.links.append(href)
 
@@ -153,6 +189,11 @@ def analyze_html(
         and parsed_page_url.path.rstrip("/").endswith(("/android", "/android/download"))
         and expected_package is not None
     )
+    is_softonic_exact_page = (
+        (hostname == "softonic.com" or hostname.endswith(".softonic.com"))
+        and parsed_page_url.path.rstrip("/").endswith(("/android", "/android/download"))
+        and expected_package is not None
+    )
     if status in (401, 403) and any(marker in lowered for marker in CHALLENGE_MARKERS):
         return Analysis("cloudflare_challenge", [], False)
     if status == 410:
@@ -164,6 +205,8 @@ def analyze_html(
         if is_uptodown_exact_page:
             return Analysis("browser_required", [], False)
         return Analysis("not_found", [], False)
+    if status in (401, 403, 412) and is_softonic_exact_page:
+        return Analysis("browser_required", [], False)
     if status == 429:
         return Analysis("rate_limited", [], False)
     if status >= 500:
@@ -171,6 +214,10 @@ def analyze_html(
     if status >= 400:
         return Analysis("http_error", [], False)
 
+    if is_softonic_exact_page and any(
+        marker in lowered for marker in SOFTONIC_BROWSER_REQUIRED_MARKERS
+    ):
+        return Analysis("browser_required", [], False, detected_version)
     if expected_package and expected_package.lower() not in lowered:
         return Analysis("package_mismatch", [], False, detected_version)
     if expected_version and version_policy == "exact":
@@ -185,6 +232,12 @@ def analyze_html(
     parser = DownloadPageParser()
     parser.feed(body)
     links = list(dict.fromkeys(urljoin(page_url, link) for link in parser.links))
+    if expected_package:
+        links = [
+            link
+            for link in links
+            if apkpure_link_matches_package(link, expected_package)
+        ]
     if links:
         return Analysis(
             "download_link", links, parser.visible_captcha, detected_version
@@ -201,6 +254,8 @@ def analyze_html(
         # negative and prevents the required browser fallback.
         return Analysis("browser_required", [], False, detected_version)
     if is_uptodown_exact_page:
+        return Analysis("browser_required", [], False, detected_version)
+    if is_softonic_exact_page:
         return Analysis("browser_required", [], False, detected_version)
     if is_apkpure_exact_page:
         # APKPure detail pages often expose only a browser-rendered

@@ -72,6 +72,34 @@ class ValidateDeliveryTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 1)
             self.assertIn("exactly one non-empty line", completed.stdout)
 
+    def test_accepts_public_source_urls(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            write_package(directory / "sample.apk")
+            write_icon(directory / "icon.webp")
+            (directory / "developer.txt").write_text("Example Developer\n")
+            (directory / "source.txt").write_text(
+                "https://example.com/app\nhttps://cdn.example.com/app.apk\n"
+            )
+
+            completed = run_validator(directory)
+
+            self.assertEqual(completed.returncode, 0, completed.stdout)
+            self.assertIn("source=", completed.stdout)
+
+    def test_rejects_non_public_source_value(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            write_package(directory / "sample.apk")
+            write_icon(directory / "icon.webp")
+            (directory / "developer.txt").write_text("Example Developer\n")
+            (directory / "source.txt").write_text("/tmp/sample.apk\n")
+
+            completed = run_validator(directory)
+
+            self.assertEqual(completed.returncode, 1)
+            self.assertIn("public HTTP(S) URLs", completed.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

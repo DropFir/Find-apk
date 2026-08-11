@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from PIL import UnidentifiedImageError
 
@@ -20,6 +21,11 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("directory", type=Path, help="Keyword delivery directory")
+    parser.add_argument(
+        "--allow-tv",
+        action="store_true",
+        help="Allow an Android TV-only package for an explicit TV request.",
+    )
     return parser.parse_args()
 
 
@@ -27,7 +33,11 @@ def package_sort_key(path: Path) -> tuple[bool, str]:
     return ("pending" in path.name.casefold(), path.name.casefold())
 
 
-def find_valid_package(directory: Path) -> tuple[Path | None, list[str]]:
+def find_valid_package(
+    directory: Path,
+    *,
+    allow_tv: bool = False,
+) -> tuple[Path | None, list[str]]:
     candidates = sorted(
         (
             path
@@ -40,7 +50,12 @@ def find_valid_package(directory: Path) -> tuple[Path | None, list[str]]:
     for package in candidates:
         suffix = package.suffix.casefold()
         try:
-            validate_download(package, suffix, "application/octet-stream")
+            validate_download(
+                package,
+                suffix,
+                "application/octet-stream",
+                allow_tv=allow_tv,
+            )
         except (OSError, ValueError) as error:
             errors.append(f"{package.name}: {error}")
             continue
@@ -76,6 +91,32 @@ def read_developer(directory: Path) -> tuple[Path | None, str | None]:
     return developer_file, None
 
 
+def read_source(directory: Path) -> tuple[Path | None, str | None]:
+    source_file = directory / "source.txt"
+    if not source_file.exists():
+        return None, None
+    if not source_file.is_file():
+        return None, "source.txt is not a regular file"
+    try:
+        text = source_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        return None, str(error)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None, "source.txt must contain at least one source URL"
+    for line in lines:
+        parsed = urlsplit(line)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or any(character.isspace() for character in line)
+        ):
+            return None, "source.txt must contain only public HTTP(S) URLs"
+    return source_file, None
+
+
 def main() -> int:
     args = parse_args()
     directory = args.directory.expanduser().resolve(strict=False)
@@ -85,9 +126,13 @@ def main() -> int:
         print("reason=delivery directory is missing")
         return 1
 
-    package, package_errors = find_valid_package(directory)
+    package, package_errors = find_valid_package(
+        directory,
+        allow_tv=args.allow_tv,
+    )
     icon, icon_errors = find_valid_icon(directory)
     developer, developer_error = read_developer(directory)
+    source, source_error = read_source(directory)
 
     reasons: list[str] = []
     if package is None:
@@ -102,6 +147,8 @@ def main() -> int:
         )
     if developer is None:
         reasons.append(developer_error or "developer.txt is invalid")
+    if source_error is not None:
+        reasons.append(source_error)
 
     if reasons:
         print("classification=invalid_delivery")
@@ -115,6 +162,8 @@ def main() -> int:
     print(f"package={package.as_posix()}")
     print(f"icon={icon.as_posix()}")
     print(f"developer={developer.as_posix()}")
+    if source is not None:
+        print(f"source={source.as_posix()}")
     return 0
 
 

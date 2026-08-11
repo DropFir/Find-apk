@@ -7,9 +7,9 @@ import argparse
 import json
 import os
 from pathlib import Path, PurePosixPath
+import shutil
 import subprocess
 import sys
-import tempfile
 from urllib.parse import parse_qs, unquote, urlparse
 import zipfile
 
@@ -17,6 +17,7 @@ from download_file import (
     acquire_download_lock,
     release_download_lock,
     select_base_apk_entry,
+    validate_apk_component,
     validate_download,
 )
 
@@ -51,6 +52,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-sdk-version", default="0")
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--retries", type=int, choices=(0, 1), default=1)
+    parser.add_argument(
+        "--allow-tv",
+        action="store_true",
+        help="Allow an Android TV-only package for an explicit TV request.",
+    )
     return parser.parse_args()
 
 
@@ -73,7 +79,7 @@ def component_filename(
         if not path_parts:
             raise ValueError("Aptoide split URL has no APK filename")
         filename = Path(path_parts[-1]).name
-        package_slug = expected_package.replace(".", "-").casefold()
+        package_slug = expected_package.replace(".", "-").replace("_", "-").casefold()
         if (
             filename != path_parts[-1]
             or not filename.casefold().endswith(".apk")
@@ -156,6 +162,7 @@ def write_xapk(
     version_code: str = "0",
     min_sdk_version: str = "0",
     target_sdk_version: str = "0",
+    allow_tv: bool = False,
 ) -> None:
     """Create an APKPure-compatible XAPK manifest and validate the result."""
     component_names = [path.name for path in component_paths]
@@ -196,7 +203,12 @@ def write_xapk(
                 separators=(",", ":"),
             ).encode("utf-8"),
         )
-    validate_download(output, ".xapk", "application/octet-stream")
+    validate_download(
+        output,
+        ".xapk",
+        "application/octet-stream",
+        allow_tv=allow_tv,
+    )
 
 
 def main() -> int:
@@ -224,13 +236,21 @@ def main() -> int:
     building = output.parent / f".{output.name}.building"
     building.unlink(missing_ok=True)
     try:
-        with tempfile.TemporaryDirectory(
-            prefix=f".{output.stem}-components-",
-            dir=output.parent,
-        ) as directory:
+        component_directory = output.parent / f".{output.stem}-components"
+        component_directory.mkdir(parents=True, exist_ok=True)
+        directory = component_directory
+        try:
             component_paths: list[Path] = []
             for filename, url in components:
-                component = Path(directory) / filename
+                component = directory / filename
+                if component.is_file():
+                    try:
+                        validate_apk_component(component)
+                    except (OSError, ValueError, zipfile.BadZipFile):
+                        pass
+                    else:
+                        component_paths.append(component)
+                        continue
                 command = [
                     sys.executable,
                     str(DOWNLOAD_TOOL),
@@ -259,6 +279,7 @@ def main() -> int:
                     version_code=args.version_code,
                     min_sdk_version=args.min_sdk_version,
                     target_sdk_version=args.target_sdk_version,
+                    allow_tv=args.allow_tv,
                 )
             except (OSError, ValueError, zipfile.BadZipFile) as error:
                 print("classification=invalid_split_archive")
@@ -266,6 +287,7 @@ def main() -> int:
                 return 1
 
             os.replace(building, output)
+            shutil.rmtree(component_directory, ignore_errors=True)
             print("classification=valid_split_archive")
             print("pipeline_result=saved")
             print(f"package_name={args.package_name}")
@@ -274,6 +296,10 @@ def main() -> int:
             print(f"output={output.as_posix()}")
             print(f"bytes={output.stat().st_size}")
             return 0
+        except Exception:
+            # Preserve completed components and resumable partials for the next
+            # invocation. The output lock prevents concurrent writers.
+            raise
     finally:
         building.unlink(missing_ok=True)
         release_download_lock(output_lock)

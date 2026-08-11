@@ -9,9 +9,16 @@
 - 一个推荐的 `APK`、`XAPK`、`APKM` 或 `APKS` 文件。
 - 一个清晰的 WEBP 应用图标。
 - 一个只包含开发者名称的 `developer.txt`。
+- 一个只包含实际下载页或公开文件页 URL（每行一个）的 `source.txt`。
 - 对话中的开发者名称、应用名称、版本、包名和来源链接。
 
-本地不生成报告、校验清单或审计记录。关键词目录通常只存放安装包、图标和 `developer.txt`；自动下载暂时受阻时可以额外创建最小的 `download-note.txt`，但它只是进度检查点，不是完成终态。
+### 安装包格式优先级
+
+1. 用户未指定格式时，固定按 `APK → XAPK → APKM → APKS` 的顺序搜索和选择。先找最新稳定版、可独立安装且兼容 ARM 手机的完整 APK；同一版本同时有 APK 和拆分包时必须选 APK。
+2. 只有 APK 入口不存在、两次总尝试后仍是临时网络失败，或实际文件被校验为缺少必需 split 的 base APK、非 ARM、TV 专用或包名错误时，才转向 XAPK/APKM/APKS。页面只写着“APK”不算成功，必须以实际下载文件和 Manifest 校验为准。
+3. 不得为了强行交付 APK 而保留不可独立安装的 base APK，也不得把 XAPK/APKM/APKS 改扩展名伪装成 APK。
+
+本地不生成报告、校验清单或审计记录。关键词目录通常只存放安装包、图标、`developer.txt` 和 `source.txt`；`source.txt` 只是来源 URL 列表，不写搜索过程。自动下载暂时受阻时可以额外创建最小的 `download-note.txt`，但它只是进度检查点，不是完成终态。
 
 ## 职责边界
 
@@ -34,16 +41,16 @@
 - 网页搜索或浏览器：搜索指定网站、官方页面和公开来源。
 - 来源搜索计划：确认包名后，优先调用仓库内的 `tools/build_source_searches.py`，一次列出 `sources.json` 中所有启用来源的关键词和包名搜索入口，避免遗漏来源。
 - 搜索候选解析：对计划中每个 `search_url` 主目标必须调用仓库内的 `tools/extract_search_candidates.py`，完整读取搜索页并提取包名完全匹配的精确候选。不得只看页面标题、搜索摘要或 `probe_url.py` 的 `ok` 就结束搜索。
-- 下载页解析与下载：取得精确详情页或下载页后，必须调用仓库内的 `tools/download_from_page.py`，在同一命令中提取并立即下载当前 APK/XAPK/APKM/APKS。APKPure 详情页缺少文件链接时，工具会自动进入同路径的 `/download` 页；APKMirror 精确变体页会自动进入带 `key` 的中间下载页并解析 `download.php` 文件入口。两者都不允许 Agent 手工跳过或改由网页搜索判断。`tools/extract_download_link.py` 只用于不保存文件的诊断，二者都会区分真实验证码与页面中未触发的验证码代码。
+- 下载页解析与下载：取得精确详情页或下载页后，必须调用仓库内的 `tools/download_from_page.py`，在同一命令中提取并立即下载当前 APK/XAPK/APKM/APKS。APKPure 详情页缺少文件链接时，工具会自动进入同路径的 `/download` 页；APKMirror 精确变体页会自动进入带 `key` 的中间下载页并解析 `download.php` 文件入口；Softonic Android 详情页会自动进入 `/android/download`。三者都不允许 Agent 手工跳过或改由网页搜索判断。工具会把目标包名传给最终下载器，并核对 APK 或拆分包 base APK Manifest 中的实际包名；网站助手、商店安装器或其他应用即使是有效 APK 也必须拒绝。`tools/extract_download_link.py` 只用于不保存文件的诊断，二者都会区分真实验证码与页面中未触发的验证码代码。
 - HTTP 文件下载：取得公开直链后，优先调用仓库内的 `tools/download_file.py`。它只重试一次、原子写入，并拒绝伪装成安装包的 HTML 页面。安装包达到 50 MiB 时会按 Content-Length 自动扩展传输预算，最低 60 秒、最高 900 秒；网络/TLS 失败会保留与目标文件绑定的隐藏分片，下一次相同 URL 可继续续传。
   对 `.apk` 还会执行轻量 split 完整性检查：优先读取二进制 `AndroidManifest.xml`；只要声明了 `requiredSplitTypes` 或 `com.android.vending.splits.required=true`，就把它判为不能独立安装的 App Bundle base APK，拒绝保存并要求改用同版本 XAPK/APKM/APKS。即使 Manifest 没有明确声明，存在 `splits*.xml`、DEX 明确引用 Unity/Cocos/Unreal/Godot 原生引擎、但包内没有任何 `lib/<ABI>/*.so` 时也同样拒绝。
-  对 XAPK/APKM/APKS 会执行外层完整 ZIP/CRC 检查、确认至少包含一个 APK，并按照 base APK Manifest 的 `requiredSplitTypes` 确认 ABI、屏幕密度等必需配置分包实际存在；在能够识别原生引擎 base APK 时还要确认存在实际含 `.so` 的 ABI split。重启任务或复用目录内现有文件前，必须运行 `tools/validate_package.py <local-package>`；`invalid_package` 不能作为已有成功结果。
+  对 XAPK/APKM/APKS 会执行外层完整 ZIP/CRC 检查、确认至少包含一个 APK，并按照 base APK Manifest 的 `requiredSplitTypes` 确认 ABI、屏幕密度等必需配置分包实际存在；普通手机任务的必需 ABI 分包必须至少包含 `arm64-v8a`、`armeabi-v7a` 或 `armeabi`，只有 `x86/x86_64` 的拆分包即使 ZIP 完整也必须拒绝。在能够识别原生引擎 base APK 时还要确认存在实际含 `.so` 的 ABI split。重启任务或复用目录内现有文件前，必须运行 `tools/validate_package.py <local-package>`；`invalid_package` 不能作为已有成功结果。
   每个输出路径还会创建进程锁；同一关键词、同一目标文件已有下载进程时，其他 Agent 必须复用其结果或等待，禁止同时写入、续传或重命名同一个隐藏分片。
 - 拆分包合成：MI9 结果页或 Aptoide `app/get?aab=true` 公开元数据已经显示 base APK 和全部配置 split 的公开直链时，调用 `tools/download_split_archive.py` 下载每个可见组件、生成标准 `manifest.json` 并原子保存为 XAPK。工具只接受 `downloads.androidcontents.com` 与 `pool.apk.aptoide.com`，并校验 CDN 域名、包名路径、每个组件的 ZIP/CRC 以及合成后的完整拆分包。不得只保存 base APK，也不得为点击被浏览器拦截的 `Get XAPK` 而要求用户接管。
 - 受阻页面探测：优先调用仓库内的 `tools/probe_url.py`，用完整浏览器导航请求头区分 Cloudflare、资源删除、站点故障和网页工具自身的打开失败。网页搜索/打开工具报“无法打开”、安全 URL 错误、后端网络错误或空响应时，必须用它复核原始搜索 URL；工具错误不等于源站无结果。
 - Cloudflare 后备：公开搜索页、应用详情页或下载页确认出现 Cloudflare 挑战时，优先复用用户当前的真实 Chrome 会话；无法通过时再使用 `onlyGuo/Cloudflare-Faker`。不得仅因 Cloudflare 直接放弃该来源。
 - WEBP 图像处理：优先调用仓库内的 `tools/convert_icon.py`。它使用 Pillow 原尺寸、无损转换并验证输出。
-- 完整交付复检：安装包、WEBP 图标和 `developer.txt` 写入后，必须调用 `tools/validate_delivery.py <keyword-directory>`。只有输出 `classification=valid_delivery` 才能把关键词计为完成、从队列移除或写入最终汇总。
+- 完整交付复检：普通任务在安装包、WEBP 图标、`developer.txt` 和 `source.txt` 写入后调用 `tools/validate_delivery.py <keyword-directory>`。局域网队列任务直接调用 `tools/keyword_queue.py complete ...`，该命令内部会执行同一完整复检；不要在它之前紧接着重复运行 `validate_delivery.py`。只有最终校验输出有效结果才能把关键词计为完成。校验器兼容没有 `source.txt` 的历史交付，但所有新任务必须保存真实来源。
 
 先定位包含本文件的 `<agent-root>`，再从该目录调用工具，不要假设调用时的工作目录。优先使用仓库隔离环境中的解释器：macOS/Linux 为 `<agent-root>/.venv/bin/python`，Windows 为 `<agent-root>/.venv/Scripts/python.exe`。隔离环境不存在时，macOS/Linux 尝试 `python3` 后再尝试 `python`，Windows 尝试 `py -3` 后再尝试 `python`。不要求安装 Android SDK、`apksigner`、JADX、APKTool、ADB 或病毒扫描工具。
 
@@ -57,6 +64,20 @@
 4. 不使用 `sudo pip`，不改动系统 Python，不把包安装到全局环境。后续工具统一使用 `<agent-root>/.venv/bin/python`。
 5. 环境已通过预检后，不在每个关键词处理中重复检查或安装依赖。
 
+## 局域网关键词队列
+
+只有任务提示明确说明由局域网关键词队列触发时，才执行本节；普通对话输入仍按后续“输入”规则处理。
+
+1. 局域网服务发来的消息若明确写有“已领取”并逐行提供任务 ID 与关键词，直接按消息顺序处理这些关键词，不得再次运行 `claim`。其他队列批次才只运行一次 `<python> <agent-root>/tools/keyword_queue.py claim --limit 10 --worker "<worker-id>"`，按返回 JSON 中的顺序处理 `jobs`；同一 `worker-id` 上次留下的 `processing` 项会被优先原序返回且不增加尝试次数，必须从现有进度继续，不能另领新词或重做已验证阶段。领取结果为空时直接结束，不得猜测或复用旧关键词。
+2. 不直接读写 `.find-apk-share/queue.sqlite3`，不把网页关键词拼接成 shell 命令，也不在一个批次领取超过 10 项。领取后仍必须遵守本文件的身份确认、来源计划、轮转队列与交付验证规则。
+   任一来源输出 `classification=candidate_found`，或已经取得包名匹配的稳定详情页/下载页后，必须立即运行 `<python> <agent-root>/tools/keyword_queue.py candidate --id <job-id> --url "<candidate-url>"`。候选锁只用于防止跳过尚未验证的真实候选；应记录稳定详情页或下载页，不把会过期的签名 CDN URL 作为候选入口。单次网络错误、403、Cloudflare 或下载中断不能直接解除候选锁。
+   候选完成一次自动解析，并在规则要求时完成真实 Chrome/Cloudflare 后备后，若确认 `404/410`、包名不匹配、`no_download_link`、只有验证码/挑战而允许的后备均失败、签名链接无法刷新，或页面完整可读但确实不再提供安装包，立即运行 `<python> <agent-root>/tools/keyword_queue.py clear-candidate --id <job-id> --reason "<候选失效的可验证原因>"`，继续剩余来源。已经得到上述可验证终态的同一候选不得在后续心跳原样重复；禁止清除仍有未尝试文件入口或可续传分片的候选。
+   清除失效候选后，仍须继续尚未执行的来源、格式和可信旧版；完整链路全部完成仍无可下载候选就立即执行一次 `miss`。候选锁不得阻止单轮完整搜索正常结束。
+3. 安装包、图标、`developer.txt` 和 `source.txt` 就绪后，直接运行 `<python> <agent-root>/tools/keyword_queue.py complete --id <job-id> --delivery-directory <keyword-directory>`；它会调用 `validate_delivery.py` 做本次唯一的最终完整复检，验证失败时不得把队列项标为完成。刚由 `download_file.py` 或 `download_from_page.py` 成功保存的新文件也不再额外重复运行 `validate_package.py`；只有恢复任务、复用旧文件或下载工具未完成包校验时才单独运行。下载工具会自动把最终采用的来源写入 `source.txt`；若使用浏览器原生下载或手工移动公开文件，必须先把实际来源 URL 写入该文件。
+4. 当前官方页面确认付费并按规则跳过后，运行 `<python> <agent-root>/tools/keyword_queue.py paid --id <job-id>`。`download-note.txt`、`valid_package`、无候选或单轮超时均不得使用 `complete` 或 `paid`。
+5. 一轮完整有效搜索已经完成但仍没有可下载候选时，运行 `<python> <agent-root>/tools/keyword_queue.py miss --id <job-id> --reason "<完整搜索路径与结果>"`，队列立即进入 `not_found_skipped`。工具错误、网络超时或没有完成规定来源时不能执行 `miss`；明确的超时、连接中断、TLS 或临时 `5xx` 只对当前请求进行最多两次总尝试，第二次仍失败就转到下一来源，不得从头重复整条来源链路。
+6. 只有进程错误、系统安全规则或外部中断确实使本轮无法继续时，退出前运行 `<python> <agent-root>/tools/keyword_queue.py retry --id <job-id> --reason "<简短原因>"`。自动化心跳、回复生成、上下文压缩、单次工具预算或普通批次时间边界都不是外部中断；遇到这些边界时保留 `processing`，下次由相同 `worker-id` 的 `claim` 自动恢复，禁止写“时间边界”后释放为 `retry`。正常的来源受阻仍按“未取得安装包不得结束”继续。
+
 ## 输入
 
 用户至少提供一个应用关键词，例如应用名称、开发者名称或包名。还可以指定版本、地区或首选格式。
@@ -65,31 +86,39 @@
 
 ### 未取得安装包不得结束
 
-1. 用户要求寻找或下载 APK 时，单个关键词只有两个允许的完成终态：安装包已保存并通过完整性验证、清晰 WEBP 图标和单行 `developer.txt` 均已写入且关键词目录通过 `tools/validate_delivery.py`，或当前官方页面明确付费后的 `付费应用已跳过`。仅有安装包、仅通过 `validate_package.py`、缺图标、缺开发者文件、`download-note.txt`、无候选、浏览器受阻、Cloudflare、网络超时、CDN `403`、旧版本不可用和同名回退无结果都不是完成终态。
-2. 单个关键词尚未取得安装包时不得发送最终答复、进入空闲或等待用户再次提醒。可以发送进度更新和写入临时 `download-note.txt`，但必须在同一任务中继续下一轮：重新验证精确候选的 APK/XAPK 两种标准 CDN 格式、可信旧版本、同名不同包名候选、真实 Chrome、Cloudflare-Faker 及下一个可信来源。
+1. 用户要求寻找或下载 APK 时，单个关键词只有三个允许的完成终态：安装包已保存并通过完整性验证、清晰 WEBP 图标和单行 `developer.txt` 均已写入且关键词目录通过 `tools/validate_delivery.py`；当前官方页面明确付费后的 `付费应用已跳过`；或完成一次完整有效搜索链路后的 `无结果已跳过`。仅有安装包、仅通过 `validate_package.py`、缺图标、缺开发者文件、`download-note.txt`、部分来源无候选、浏览器受阻、Cloudflare、网络超时、CDN `403`、旧版本不可用和单次同名回退无结果都不是完成终态。
+2. 单个关键词尚未取得安装包时不得发送最终答复、进入空闲或等待用户再次提醒。可以发送进度更新和写入临时 `download-note.txt`，但必须在同一任务中继续尚未执行的路径：先完成精确候选的独立 APK 路径，APK 不存在或校验无效后再按 XAPK → APKM → APKS 回退，然后继续可信旧版本、同名不同包名候选、真实 Chrome、Cloudflare-Faker 及下一个可信来源；已经取得确定结果的路径不得重跑。
 3. 同一个 URL 仍遵守既定重试上限，禁止无间隔死循环；一轮穷尽后应更换格式、版本或来源。所有当前路径暂时受阻时，使用产品提供的等待或后续继续机制保持任务未完成，并在外部状态变化后续跑；不得把进度说明伪装成最终结果。
-4. 多关键词任务中，单项受阻后先继续其他关键词，整批末尾必须重新处理未完成队列。只有每项都取得安装包或付费跳过后才能发送整批最终答复。
+4. 多关键词任务中，单项受阻后先继续其他关键词，整批末尾必须继续其未完成路径。只有每项都取得安装包、付费跳过或完成一次完整有效搜索后无结果跳过，才能发送整批最终答复。
 5. 用户明确说“只查找、不下载”、明确允许仅给下载说明、主动取消，或系统安全规则禁止继续时，才允许没有安装包而结束。普通网络和浏览器工具限制不属于用户取消。
 
 ### 大批量队列与断点续跑硬约束
 
-1. 收到多个关键词后，按照用户给出的原始顺序建立唯一队列。每次开始或恢复任务时，先逐项重建状态：只有关键词目录通过 `tools/validate_delivery.py`，或当前执行记录已经由官方页面确认付费，才能从队列移除。仅有通过 `tools/validate_package.py` 的安装包但缺少有效 WEBP 图标或单行 `developer.txt` 时，只能进入附属文件补齐队列，仍不得计为完成。空目录、`download-note.txt`、旧失败回复、曾经提交过搜索以及 Agent 自己标记的 `blocked` 都不能移除关键词。
-2. 队列执行固定分为三阶段：批量确认全部待处理项的官方身份；为已确认包名的全部待处理项生成并执行来源计划；按原始顺序逐个解析候选和下载。恢复任务时从尚未完成的阶段和关键词继续，不得重新处理已经验证成功或付费跳过的项目。
+1. 收到多个关键词后，按照用户给出的原始顺序建立唯一队列。每次开始或恢复任务时，先逐项重建状态：只有关键词目录通过 `tools/validate_delivery.py`、当前执行记录已经由官方页面确认付费，或队列已记录完整有效搜索后的 `not_found_skipped`，才能从队列移除。仅有通过 `tools/validate_package.py` 的安装包但缺少有效 WEBP 图标或单行 `developer.txt` 时，只能进入附属文件补齐队列，仍不得计为完成。空目录、`download-note.txt`、旧失败回复、曾经提交过搜索以及 Agent 自己标记的 `blocked` 都不能移除关键词。
+2. 队列执行固定分为三阶段：批量确认全部待处理项的官方身份；为已确认包名的待处理项生成来源计划并先执行最高优先级包名查询；按原始顺序逐个解析候选和下载。只有失败项才继续关键词查询与低优先级来源。恢复任务时从尚未完成的阶段和关键词继续，不得重新处理已经验证成功、付费跳过或完整搜索后无结果跳过的项目。
 3. 下载阶段使用轮转队列。一个关键词完成一次新的有效尝试后，如果仍未取得安装包，立即移到当前轮末尾并处理下一个关键词；“新的有效尝试”必须更换来源、精确 URL、格式、版本或后备方式。其他待处理项尚未各获得一次尝试前，禁止连续多轮重试同一关键词、同一 URL 或同一外部状态。
-4. 一轮结束后，仅对仍未完成项开始下一轮，并从上一轮最后处理项的下一个关键词继续。每一轮的优先顺序固定为：尚未验证的精确候选 → 尚未执行的启用来源 → APK/XAPK/APKM/APKS 格式回退 → 可信旧版本 → 同名不同包名回退 → 当前规则允许的浏览器或 Cloudflare 后备。已经得到明确 `404/410` 的同一精确 URL 不得在下一轮原样重试。
+4. 一个时间片结束后，仅继续仍未完成项的未执行路径，并从上次最后处理项的下一个关键词继续。优先顺序固定为：尚未验证的精确候选 → 尚未执行的启用来源 → 当前精确候选所需的浏览器或 Cloudflare 后备 → 按 APK → XAPK → APKM → APKS 进行格式回退 → 可信旧版本 → 有官方关联证据的不同包名回退。已经得到明确 `404/410` 或完成两次网络尝试的同一精确 URL 不得再次原样请求。
 5. 每次进度更新必须保留可供续跑的最小队列信息：本批总数、已完成数、未完成关键词原始顺序、刚完成的尝试以及下一个动作。该信息只写在对话中；需要跨轮保存单项阻塞点时更新该关键词最多四行的 `download-note.txt`，不得创建额外审计文件。
 6. 临近单轮、工具或上下文边界时，只能把当前回复标为“进度/待自动续跑”，不得把任务或整批标记为 `blocked`、`complete`、最终失败或“所有来源已耗尽”。产品的监控或后续继续机制唤醒后，先重新读取本文件，再按第 1 条重建队列并从记录的下一个动作继续。
-7. 只有当前执行记录同时具备官方身份三元组、`build_source_searches.py` 的完整计划、全部启用来源的关键词与包名查询结果、所有已找到精确候选的 `download_from_page.py` 结果，以及所需 Chrome/Cloudflare-Faker 后备结果时，才能写“本轮允许路径已耗尽”。这仍只是进入下一轮或等待外部状态变化的条件，不是完成终态。
+7. 只有当前执行记录同时具备官方身份三元组、`build_source_searches.py` 的完整计划、全部启用来源的关键词与包名查询结果、所有已找到精确候选的 `download_from_page.py` 结果，以及所需 Chrome/Cloudflare-Faker 后备结果时，才能把本次链路记为有效搜索无结果并执行一次 `keyword_queue.py miss`；队列会直接转换为完成终态。
 8. 重复的 `404`、Cloudflare、网络超时或外部搜索无结果，只绑定到对应的来源、包名、精确 URL 和本轮尝试。在第 7 条证据不完整时，绝对不得据此把单个关键词或整批标记为受阻。
 9. 关键词目录只在准备写入安装包、图标、`developer.txt` 或 `download-note.txt` 时创建。已经存在的空目录不代表开始、失败或完成；恢复任务时忽略它，不能据此跳过关键词。
 
 ### 付费应用直接跳过
 
-1. 当前可访问的 Google Play、开发者官网或其他官方商店明确显示价格、`Buy/购买`，或开发者明确称其为 `paid/premium title` 时，把该关键词标记为 `付费应用已跳过`。这是多关键词任务中的正常终态，立即继续下一个关键词，不得暂停或询问用户。
+1. 当前可访问的 Google Play、开发者官网或其他 Android 官方商店明确显示价格、`Buy/购买`，或开发者明确称 Android 版为 `paid/premium title` 时，把该关键词标记为 `付费应用已跳过`。这是多关键词任务中的正常终态，立即继续下一个关键词，不得暂停或询问用户。只有付费 iOS 页面、且没有 Android 官方页时不能记为 `paid_skipped`；应按一次完整 Android 身份与来源搜索无结果处理。
 2. 付费判断只允许使用当前官方页面。第三方镜像、搜索摘要或旧价格记录不能单独证明应用仍为付费；Google Play 仅显示“包含应用内购买”但按钮为 `Install/安装` 的免费应用不属于本规则。
 3. 确认付费后不得继续搜索 APK 镜像、`free download`、`premium free`、`MOD`、`unlocked`、破解站、缓存站或历史安装包，也不得启动 Chrome、Cloudflare 后备或 CDN 探测。文件是否能够下载不改变付费状态。
 4. 付费跳过时不创建关键词下载目录，不保存安装包、图标、`developer.txt` 或 `download-note.txt`。最终汇总只列出应用名称、开发者、包名、`付费应用已跳过` 和官方购买页面。
 5. 官方商店当前明确显示限时免费且按钮为 `Install/安装` 时不按付费跳过；继续执行普通来源规则，但仍禁止 MOD、破解和付费解锁包。用户以后明确提供开发者授权的公开安装包 URL 时，按用户提供精确 URL 的普通验证流程处理。
+
+### 单轮完整有效搜索无结果跳过
+
+1. “完整搜索 1 次”指核验官方身份与同名变体、执行全部启用来源计划、验证发现的新格式/版本/候选，并完成规则要求的真实 Chrome/Cloudflare 后备。候选经完整流程确认失效并清除属于有效结果；相同 URL、相同来源、相同版本和相同外部状态不得重复执行，也不得因旧候选锁反复延长任务。
+2. 只有所有提交的关键查询都取得可读结果，或明确确认目标只提供网页/iOS 等非 Android 版本时，才能执行一次 `keyword_queue.py miss`。工具传输错误、网络超时、批量请求被中断、Cloudflare 尚未执行后备和证据不完整都不算完整有效搜索；明确的可重试网络错误对当前请求最多执行两次总尝试。
+3. 完整搜索仍无结果时，第一次 `miss` 就把队列状态变为 `not_found_skipped`，停止继续搜索该关键词并立刻处理下一个关键词。不得为累计次数从官方身份或来源计划重新开始第二轮。
+4. `无结果已跳过` 不创建伪安装包、图标或 `developer.txt`，也不能用不相关同名应用充数。最终汇总应写明应用关键词、已完成一次完整有效搜索、最后原因；它不等于“应用永久不存在”。
+5. 用户提供新的精确包名、官方 Android 页面或公开安装包 URL 时，可以重新提交相同关键词；新任务开始一条新的完整链路，不继承旧任务的无结果次数。
 
 如果关键词对应多个相近应用，Agent 必须自行完成身份消歧，不得暂停任务询问用户。选择顺序固定为：
 
@@ -110,16 +139,18 @@
 
 ### 同名不同包名回退
 
-1. Google Play 当前包名仍是官方身份和第一选择；必须先完成该包名的来源计划。只有官方包名在全部启用来源和允许的后备中没有可下载文件时，才进入同名不同包名回退，不能因为同名包更容易下载就提前替换官方包。
+1. Google Play 当前包名仍是官方身份和第一选择；必须先完成该包名的来源计划。只有官方包名在全部启用来源和允许的后备中没有可下载文件，并且当前官方页或开发者官网明确证明包名迁移、地区发行或同品牌替代关系时，才进入不同包名回退。仅凭相同标题、相似图标、同一品牌或历史镜像页不得交付旧包；没有官方关联证据时按一次完整搜索无结果处理。
 2. 回退候选允许包名不同，但页面显示的应用主标题必须与用户关键词或已确认官方标题相同；同时核对开发者、品牌、图标和用途。开发者完全不同且没有品牌关联证据，或只是标题中包含相同词语的应用，不得采用。
 3. `stg`、`beta`、`internal`、地区版、旧发行包或预发布包可以作为最后回退，但必须使用它自己的实际包名和实际版本调用下载工具，并通过相同的 ZIP/CRC 与 split 完整性检查。禁止把不同包名传成官方包名来绕过 `package_mismatch`。
 4. 找到合格同名候选后自动下载，不询问用户。文件名要用 `-stg`、`-beta`、地区或其他必要后缀区分；最终回复必须并列写出官方包名、实际下载包名以及候选性质，明确它不是官方生产包时不得省略。
 5. 同名回退只是下载候选，不得改写已确认的 Google Play 官方身份，也不得把该候选用于证明官方包名迁移。付费应用直接跳过、禁止 MOD/破解及用户明确指定包名或精确页面的规则仍具有更高优先级。
-6. 创建 `download-note.txt` 前必须完成同名回退审计；已发现标题和品牌相符且可下载的不同包名候选时，不能再以“官方包名无候选”为终态。
+6. 创建 `download-note.txt` 前必须完成同名回退审计；只有已发现标题和品牌相符、可下载且具备当前官方关联证据的不同包名候选时，才不能以“官方包名无候选”为终态。
 
 ### 地区与平台变体硬约束
 
-1. 关键词没有明确包含 `TV`、`Android TV`、`Fire TV`、`Kids`、`Asia`、`US` 等平台或地区限定词时，默认优先标准手机/平板应用。不得仅凭搜索摘要把候选称为 Android TV、地区版或全球版；平台和地区必须由官方页面、Google Play 设备说明或安装包元数据明确支持。
+1. 关键词没有明确包含 `TV`、`Android TV`、`Fire TV`、`Kids`、`Asia`、`US` 等平台或地区限定词时，默认只接受标准手机/平板应用。不得仅凭搜索摘要把候选称为 Android TV、地区版或全球版；平台和地区必须由官方页面、Google Play 设备说明或安装包元数据明确支持。
+   同一个 Google Play 包名可能按设备分发完全不同的手机与 TV 构建，包名、标题、开发者和版本一致不能证明平台正确。下载后必须读取 base APK Manifest：`android.software.leanback` 的 `required=true`（或省略 `required`，其默认值为 true）表示 Android TV 专用包，普通关键词必须拒绝并继续寻找手机/平板变体；仅有 `LEANBACK_LAUNCHER` 或 `leanback required=false` 只表示兼容电视，不得误判为 TV 专用。
+   `download_file.py`、`validate_package.py` 和 `validate_delivery.py` 默认拦截 TV 专用包。只有用户关键词明确要求 TV/Android TV 时，才允许在下载及最终复检命令中显式传入 `--allow-tv`；不得为了让错误候选通过而使用该参数。
 2. 官方身份查询发现同一品牌存在多个包名时，锁定包名前必须列出内部候选表，至少核对应用标题、开发者、包名、平台和地区。这个表只用于 Agent 决策，不写入本地文件；最终仍只交付一个最佳应用。
 3. 用户提供精确页面、包名或地区后，它立即覆盖此前自动选择的身份。必须先按该精确 URL 重新验证和下载，不能沿用另一个包名的 `404`、`410`、Cloudflare 或下载失败结论。
 4. 失败结论严格绑定到 `(来源域名, 包名, 精确 URL)`。某个包名的详情页或 `/download` 返回 `404/410`，只能说明该精确资源失效；不得写成同名应用、同品牌其他地区包或整个来源“已删除”。
@@ -128,17 +159,25 @@
 ```text
 site:play.google.com/store/apps/details "<original-keyword>"
 site:apkpure.com "<original-keyword>" APK
+site:apkpure.net "<original-keyword>" APK
 site:apkmirror.com "<original-keyword>" APK
 ```
 
 发现同一官方品牌/开发者的标准移动版、地区版或替代包名后，必须分别验证精确页和实际包名。功能匹配且可下载时，选择最符合用户原始关键词、平台和地区的候选；最终用一句话注明自动改选依据。不得为了得到文件而选择名称相似但开发者或功能不同的应用。
 6. 同名变体审计发现当前 Google Play 精确页的 `id=` 与首个包名不一致时，这不是可选的“相似应用”，而是身份确认错误；必须按“包名证据硬约束”更正并重跑来源计划，禁止继续沿用旧包名的无候选、Cloudflare 或下载失败结论。
 
+### 手机 ABI 兼容性硬约束
+
+1. 用户没有明确指定模拟器、ChromeOS 或 x86 设备时，普通手机/平板任务默认要求 ARM 兼容。APK 的原生库目录或 XAPK/APKM/APKS 的必需 ABI 分包必须至少匹配 `arm64-v8a`、`armeabi-v7a` 或 `armeabi`；只有 `x86`、`x86_64` 的候选不得交付。
+2. XAPK/APKM/APKS 显示 base APK、ZIP/CRC 完整、包名正确或 `validate_delivery.py` 其他项目均合格，都不能覆盖 ABI 不兼容。只要 base 模块要求 ABI split，而归档中没有 ARM ABI 分包，必须判为 `invalid_package` 并继续寻找同版本 ARM 变体或可信旧版。
+3. 来源页同时列出多个变体时，必须读取实际归档内的 APK 条目或分包清单，不得只凭页面标题中的 “universal”“phone” 或版本号判断兼容。优先选择包含 `arm64-v8a` 的变体；只有 32 位 ARM 候选时可以采用 `armeabi-v7a`/`armeabi`，并在回复中注明。
+4. 已知目标设备的 `supported_abis` 时，交付包提供的 ABI 必须与其有交集；完成前应使用设备准备工具或等价的分包选择逻辑验证能选出 base、兼容 ABI、密度和语言分包。出现“手机 ABI 与分包模块不兼容”时，旧交付立即失效，修复并复检前不得维持完成结论。
+
 ## 官方来源发现
 
 搜索 APK 镜像前，必须先找到开发者官网或官方应用页。该步骤用于确认应用身份和官方入口，不要求官网直接提供 APK。
 
-依次使用以下查询模板：
+优先用一次批量查询取得 Google Play 精确页、页面标题、开发者和开发者官网：
 
 ```text
 "<keyword>" official app
@@ -148,7 +187,7 @@ site:<developer-domain> "<keyword>"
 site:<developer-domain> "<keyword>" download app
 ```
 
-从 Google Play 找到开发者网站后，还要打开该域名并站内搜索关键词。通用产品页若只把目标应用当作功能提及，应继续查找专门的产品页。例如 `Capital One Mobile` 页面提到 CreditWise 时，还要继续定位 `capitalone.com/creditwise/`。
+Google Play 精确页的最终 `id=`、标题和开发者一致时，成功下载路径不再强制逐个打开开发者网站并补做关键词与包名两条站内搜索。只有 Google Play 不可读、同名候选无法唯一确定、包名迁移/地区版需要证明、或准备判定付费/无结果时，才打开开发者域名继续核验。通用产品页若只把目标应用当作功能提及，应继续查找专门的产品页。
 
 最终回复必须同时列出找到的开发者官网和 Google Play 页面；缺少其中一项时明确写“未找到”，不能因为官网没有 APK 而省略官网。
 
@@ -162,9 +201,9 @@ site:<developer-domain> "<keyword>" download app
 <python> <agent-root>/tools/build_source_searches.py "<original-keyword>" --package-name "<package.name>"
 ```
 
-对输出中的全部启用来源完成一轮批量搜索后，才能写“指定来源无结果”。不得凭最终 `download-note.txt`、下载目录内容或记忆判断某个来源是否搜索过。
+成功路径采用渐进搜索：先把最高优先级、彼此独立的站内来源包名查询放在同一批执行，并按 `sources.json` 顺序选择结果；出现精确候选后立即验证和下载，交付有效后停止剩余关键词查询和低优先级来源。只有当前候选失效或下载失败时才继续下一来源。准备执行 `miss` 或写“指定来源无结果”时，才必须补齐全部启用来源的关键词与包名查询。不得凭最终 `download-note.txt`、下载目录内容或记忆判断某个来源是否搜索过。
 
-输出每行依次为来源、查询类型、查询方式、主目标和备用外部查询。主目标为搜索 URL 时必须先访问主目标；只有主目标受阻或不可用时才执行同一行的备用查询。关键词行与包名行必须分别执行，不得把二者合并成同时包含两个引号条件的更严格查询，也不得用近似查询代替后声称已经完成该行。`browser_generator` 是全部优先来源耗尽后才执行的包名生成器，不交给 `extract_search_candidates.py`。
+输出每行依次为来源、查询类型、查询方式、主目标和备用外部查询。主目标为搜索 URL 时必须先访问主目标；只有主目标受阻或不可用时才执行同一行的备用查询。成功路径先执行包名行；包名行没有候选、候选失效或准备记无结果时，再补关键词行。两种查询不得合并成同时包含两个引号条件的更严格查询，也不得用近似查询代替后声称已经完成该行。`browser_generator` 是全部优先来源耗尽后才执行的包名生成器，不交给 `extract_search_candidates.py`。
 
 对每个 `search_url` 主目标使用以下命令。它会以完整导航请求头读取页面、检查通用搜索重定向，并只返回包名完全匹配的候选链接：
 
@@ -192,8 +231,8 @@ site:<developer-domain> "<keyword>" download app
     - `已尝试下载`：已把公开文件直链交给下载工具。
     - `付费应用已跳过`：官方当前页面明确要求购买；不再执行镜像搜索或下载，并立即继续批次中的下一个关键词。
 11. 回答“是否搜索过某来源”时，必须先检查当前对话中的实际工具记录，并用上述状态回答。提交过 `site:` 查询不能说成“完全没搜索”；只提交过查询也不能说成“访问过精确页面”。对话历史无法读取时明确说“现有记录无法确认”，不得根据下载说明倒推。
-12. APKPure 是当前最高优先级镜像。它的搜索结果出现匹配候选时，必须先打开并验证其精确页；只有精确页受阻、失效、包名不匹配或没有可下载文件时，才选择下一个镜像的候选。APKPure 页面版本比预查版本更新时必须采用页面实际版本，不能写成“版本不匹配”或“版本较旧”。搜索结果没有候选时记录为 `已查询` 即可，不得编造精确页访问。
-13. 只有关键词与包名两条独立查询均取得可读的完整响应后，才能对该来源写“无匹配候选”。如果只完成其中一条，必须写“已执行部分查询，暂未发现候选”，并在时限内补完另一条。诸如 `"<keyword>" "<package.name>"` 的合并查询不等价于两条独立查询。请求已提交但返回工具错误、超时或中断不算完成。
+12. APKPure 是当前最高优先级镜像，按 `apkpure.com`、`apkpure.net` 的顺序分别搜索。任一域名的搜索结果出现匹配候选时，必须先打开并验证其精确页；只有精确页受阻、失效、包名不匹配或没有可下载文件时，才选择下一个镜像的候选。两个 APKPure 域名的页面版本比预查版本更新时必须采用页面实际版本，不能写成“版本不匹配”或“版本较旧”。搜索结果没有候选时记录为 `已查询` 即可，不得编造精确页访问。
+13. 只有准备对该来源写“无匹配候选”或执行 `miss` 时，才要求关键词与包名两条独立查询均取得可读的完整响应。成功交付路径在包名查询找到精确候选后无需补做关键词查询。诸如 `"<keyword>" "<package.name>"` 的合并查询不等价于两条独立查询；请求已提交但返回工具错误、超时或中断不算完成。
 14. 批量请求只允许用于发现候选 URL，不允许用于判断精确下载页是否含直链。批量命令超时或中断后，没有独立结果的查询只能标记为“未检查”，不得使用部分 HTML、临时正则或猜测写成“无候选”或“无直链”。批量搜索后端在返回任何独立结果前整体失败时，允许在剩余时限内把关键词和包名查询各自单独重发一次；这不算重复提交同一批次。
 15. 用户提供了精确详情页或下载页时，该 URL 是最高优先级候选，必须先使用 `download_from_page.py` 实际解析和下载，再继续普通搜索。旧的 `download-note.txt` 或历史失败结论不得覆盖当前精确 URL。
 16. APKPure 搜索页需要额外检查最终 URL 和页面标题。关键词搜索返回 `200` 且页面包含包名匹配的详情页时，必须立即标记为 `已找到候选` 并打开该精确页。包名搜索若被重定向到不含 `q` 参数的通用 `/search` 页面，或页面标题只是通用搜索首页，只能视为该条站内查询不可用，不能视为“无匹配候选”；应保留关键词查询已发现的候选，并对包名执行备用外部查询。
@@ -244,7 +283,7 @@ site:<developer-domain> "<keyword>" download app
    - `package_mismatch`：不得下载；检查一次页面和参数后换来源。
    - `version_mismatch`：只允许在用户明确指定版本且命令使用 `--version-policy exact` 时出现；不得下载错误版本。默认宽松模式出现此分类属于调用错误，必须改用 `prefer-latest` 重新执行。
    - `detected_version`：页面实际版本。它高于参考版本时直接采用；低于参考版本但没有更高版本可下载时，允许作为可信回退版本。保存文件和最终回复必须使用该实际版本，不能沿用预查版本。
-   - `browser_required`：APKCombo 直连请求只返回“Downloading / Sorry, something went wrong”动态占位页，或 Uptodown 精确公开页对非浏览器客户端返回 `404`/空下载按钮时，必须由 Agent 自动打开同一精确页。APKCombo 在真实 Chrome DOM 中核对包名、版本和唯一 `variant` 链接；Uptodown 核对应用详情中的版本和文件格式，进入 `/android/download` 后点击唯一下载按钮。APKPure 详情页的 `browser_required` 由 `download_from_page.py` 自动转换为同路径 `/download` 页并重新解析；只有转换后的实际 `/download` 页仍返回 `browser_required` 时才允许启动 Chrome，而且必须打开该 `/download` 页，不得重开详情页。三者都不得要求用户复制链接或手动点击。
+   - `browser_required`：APKCombo 直连请求只返回“Downloading / Sorry, something went wrong”动态占位页，或 Uptodown、Softonic 精确公开页对非浏览器客户端返回挑战页、`404` 或空下载按钮时，必须由 Agent 自动打开同一精确页。APKCombo 在真实 Chrome DOM 中核对包名、版本和唯一 `variant` 链接；Uptodown 必须进入 `All variants`，选择与页面包名一致的 APK/XAPK，禁止点击或下载“with Uptodown App Store”入口；Softonic 只允许使用目标应用自己的 `Free APK/XAPK Download` 或 `dt=internalDownload` 入口，禁止 Softonic Helper。APKPure 详情页的 `browser_required` 由 `download_from_page.py` 自动转换为同路径 `/download` 页并重新解析；Softonic 详情页同样自动转换为 `/android/download`。转换后的页面仍为 `browser_required` 时才允许启动 Chrome，且必须打开转换后的下载页。所有候选最终仍必须通过 Manifest 包名校验，四者都不得要求用户复制链接或手动点击。
    - 工具输出 `transition=apkpure_download_page` 时，表示已经自动完成 APKPure 详情页到 `/download` 页的转换；Agent 必须以转换后的最终分类继续，禁止把最初详情页的 `browser_required` 当作最终结果。
    - APKPure 搜索工具已找到或用户已提供包名完全匹配的精确 URL 后，详情页间歇出现 `cloudflare_challenge`，或其旧式 `/download` 路径返回 `404`、`410`、`browser_required`、`cloudflare_challenge`、`no_download_link` 时，不得把整个应用写成“已删除”或“没搜到”。`download_from_page.py` 会继续对与目标格式一致的标准 `d.apkpure.com/b/XAPK|APK/<package>?version=latest` 入口执行 HEAD 核验；只有跳转后的包名、格式、内容类型和长度均有效才会下载，并从 CDN 文件名采用页面实际版本。工具输出 `transition=apkpure_cdn_fallback` 时必须直接使用其 `download_url`，不得跳到其他来源或要求用户手动下载。这是公开文件入口后备，不需要先等待 Cloudflare。
    - APKPure 的 `/b/APK/` 或页面上的“APK”字样不保证最终文件一定是单体 APK；CDN 可能把该入口重定向到 XAPK。最终格式必须以 HEAD 跳转后的 `filename` 扩展名和内容类型共同确认。它与目标后缀不一致时不得下载或把 XAPK 保存成 `.apk`；用户未指定格式时，改用实际格式和正确扩展名重新调用工具，用户明确指定格式时则换来源。
@@ -273,31 +312,18 @@ site:<developer-domain> "<keyword>" download app
 11. 不使用验证码代答服务、住宅代理或通用自动点击工具。真实 Chrome 会话是首选后备，Cloudflare-Faker 是次选；二者只允许用于无需登录、无需付费且无需账户权限的公开 APK 搜索、详情和下载页面。
 12. `probe_url.py`、`extract_download_link.py`、`download_from_page.py` 和最终文件下载工具必须复用仓库内统一的 `tools/http_headers.py` 请求身份。不得出现探测使用一种 User-Agent 返回 `200`、完整解析换另一种 User-Agent 返回 `403` 后又误写成“网络超时”的情况。
 
-### MI9 完整拆分包后备
+### MI9 完整拆分包后备（暂停可见浏览器访问）
 
-MI9 是 `sources.json.publicDownloaderFallbacks` 中的公开包名生成器，不是首选镜像。官方已确认免费、全部 `preferredSources` 与可信公开搜索均没有可下载完整包时，才执行计划中的 `browser_generator`。
-
-1. 在唯一复用的 Chrome 工作标签页打开 `https://mi9.com/apk-downloader/`，输入当前 Google Play 精确 URL 或已确认包名，只点击一次 `Generate`。不得按关键词猜包名，也不得为同一包在同一轮重复生成。
-2. 结果页必须同时显示与官方证据一致的应用标题、开发者、包名和实际版本；不一致就放弃该结果，不得为了取得文件降低身份要求。
-3. 页面列出 base APK 与 `config.*.apk` 时，读取所有可见 APK 链接。链接必须是 HTTPS、域名为 `downloads.androidcontents.com`、URL 路径中的包名与当前包名完全一致；只出现 base、缺少页面已显示的 split，或链接已过期时都不能合成。
-4. 不点击被浏览器安全层拦截的 `Get XAPK`、`Get ZIP` 或 `Get APK`，也不尝试绕过 `ERR_BLOCKED_BY_CLIENT`。直接把同一结果页上全部已核验的组件 URL 交给：
-
-```bash
-<python> <agent-root>/tools/download_split_archive.py "<output.xapk>" --package-name "<package.name>" --app-name "<app name>" --version "<detected-version>" --split-url "<base-url>" --split-url "<config-url>" --split-url "<remaining-config-url>" --timeout 20 --retries 1
-```
-
-5. 必须把结果页列出的每个当前设备配置组件都传入命令；工具输出 `pipeline_result=saved` 后再运行 `tools/validate_package.py <output.xapk>`。只有 `valid_package` 才算完成，组件下载失败或缺 ABI split 时重新生成一次新链接后转下一可信来源，不要求用户复制链接或手工点击。
-6. MI9 以及其他未列入 `preferredSources` 的通用下载器每个包每轮只允许一次有效尝试。20 秒内不能给出精确身份和公开组件/文件链接的页面立即放弃；广告页、安装器推广、循环跳转和要求登录的页面不继续操作。
+MI9 当前已在 `sources.json` 中停用，并列入不可使用可见浏览器的域名。Agent 只需把历史计划中的 MI9 记为 `disabled_by_policy` 后继续下一来源；不要加载、解释或执行已停用实现的旧操作步骤。将来只有 `sources.json` 重新启用且仓库提供隔离提取器后，才按当时的工具说明执行。
 
 ### 真实 Chrome 标签页与断线约束
 
 1. 连接 Chrome 后、进行任何导航前，先记录任务开始时已经存在的标签页 ID；这些标签一律视为用户标签，绝对不得关闭或拿来执行下载流程。此后由 Agent、页面脚本、弹窗或点击产生的标签都视为本任务创建的标签，可以按本节规则自动关闭。
 2. 整批任务只保留一个由 Agent 创建的工作标签页反复导航；确需同时核对官方身份时最多临时增加一个。Agent 创建的任务标签页硬上限为两个，Cloudflare-Faker 自己管理的瞬时标签不计入但完成后也必须关闭。
-3. 每次导航、点击、提交搜索或点击 `Generate` 后，立即比较本任务标签集合。除当前关键词标题/包名页面、当前来源计划中的精确域名、Google Play/已核验开发者官网以及下载工具允许的文件 CDN 外，任何新标签都属于非关键词标签，必须立即关闭。广告、博彩、购物、通知订阅、安装器推广、无关搜索结果和其他跳转页只允许读取 URL/标题用于判定，不读取正文、不点击、不返回交互。
-   `sources.json.browserSessionPolicy.blockedDomains` 是永久浏览器域名黑名单。当前至少包含 `playafterdark.com` 及其广告跳转域名 `iccku.com`；发现命中域名或其任意子域的标签后必须立即关闭，不读取标题以外的内容、不点击、不导航到该域名，也不得把它作为下载候选、来源或待续跑入口。黑名单弹窗由来源页面触发时，只关闭弹窗并继续核对原工作标签；不得因此重复提交同一次 `Generate`。
+3. 每次导航、点击或提交搜索后，立即比较本任务标签集合。除当前关键词标题/包名页面、当前来源计划中的精确域名、Google Play/已核验开发者官网以及下载工具允许的文件 CDN 外，任何新标签都属于非关键词标签，必须立即关闭。广告、博彩、购物、通知订阅、安装器推广、无关搜索结果和其他跳转页只允许读取 URL/标题用于判定，不读取正文、不点击、不返回交互。所有域名黑名单、禁止可见浏览器域名和子标签关闭策略以 `sources.json.browserSessionPolicy` 为准，不在本文件重复维护。
 4. 若广告或无关跳转占用了 Agent 当前工作标签，而不是新开标签，立即关闭该工作标签，并在仍不超过硬上限的前提下新建一个干净工作标签重新打开原目标 URL；不得在广告页使用返回、刷新或继续点击。关闭后必须再次确认剩余 Agent 标签均与当前关键词或允许来源相关。
-5. 打开新标签前先复用当前工作标签。提取到所需链接或确定该来源不可用后，立即关闭由 Agent 创建的旧搜索页、错误页、空白页和重复下载页；整批结束时关闭全部 Agent 创建的任务标签。
-6. Chrome 扩展连接中断时，丢弃失效的浏览器对象并只重连一次；重连前后都不得继续创建标签。一次重连仍失败就记为 `chrome_unavailable`，继续 Cloudflare-Faker、MI9 已公开的组件直链或下一个来源，不能通过反复打开标签恢复连接。
+5. 打开新标签前先复用当前工作标签。提取到所需链接或确定该来源不可用后，立即关闭由 Agent 创建的旧搜索页、错误页、空白页和重复下载页；整批结束时关闭全部 Agent 创建的任务标签，并用任务开始标签 ID 基线与当前开放标签做一次差集复检。
+6. Chrome 扩展连接中断时，丢弃失效的浏览器对象并只重连一次；重连前后都不得继续创建标签。一次重连仍失败就记为 `chrome_unavailable`，继续 Cloudflare-Faker 或下一个来源，不能通过反复打开标签恢复连接。
 7. 公开页面的普通浏览器后备已经获得项目所有者授权，不得逐个关键词询问是否打开、是否继续或是否下载。页面明确要求人工验证码或平台安全规则要求确认时，不请求用户接管；记为 `interactive_challenge_pending` 并自动切换下一个来源。用户以后主动要求继续该特定页面时，再遵守平台确认流程。
 8. 不复用上一个关键词遗留的 DOM、按钮、签名 URL 或 `download-note.txt`。复用的是同一个标签页本身，每个关键词都必须重新导航并核对当前页面。
 
@@ -305,10 +331,10 @@ MI9 是 `sources.json.publicDownloaderFallbacks` 中的公开包名生成器，�
 
 执行顺序固定为：用户当前的真实 Chrome 会话 → [onlyGuo/Cloudflare-Faker](https://github.com/onlyGuo/Cloudflare-Faker) → 下一个可信来源。Cloudflare-Faker 固定审查版本为 `5b0f2a4759d7b84c36e37afbe5c2e6400706b6c6`，不得在无人复核的情况下自动跟随仓库最新提交。
 
-1. 整批关键词开始前只预检一次，不计入单关键词时限：先确认是否能控制用户当前已打开的 Chrome；再检查 Cloudflare-Faker 所需的 GUI、Chrome、JDK 24、仓库和开发者扩展。仓库放在 `<agent-root>/tools/vendor/Cloudflare-Faker/`，只保存在本机且由 `.gitignore` 排除。
+1. 批次开始时不主动启动或诊断 Chrome、JDK 与 Cloudflare-Faker。首次实际出现 `cloudflare_challenge` 或最终 `browser_required` 时才做一次按需预检，并在本批后续来源中复用该结果；没有浏览器类阻塞的批次完全跳过此步骤。届时先确认是否能控制用户当前已打开的 Chrome，再检查 Cloudflare-Faker 所需的 GUI、Chrome、JDK 24、仓库和开发者扩展。仓库放在 `<agent-root>/tools/vendor/Cloudflare-Faker/`，只保存在本机且由 `.gitignore` 排除。
 2. `probe_url.py` 返回 `cloudflare_challenge`，或正常解析取得 Cloudflare 验证页时，先在用户当前 Chrome 的同一配置文件和同一标签会话中打开原始目标 URL。使用浏览器控制工具时必须明确选择已安装扩展连接的真实 Chrome 会话（`agent.browsers.get("extension")`）；不得使用 `getForUrl` 自动选择、内置浏览器或新建隔离配置文件后声称真实 Chrome 不可控。允许页面自动完成挑战；明确要求人工交互时按“真实 Chrome 标签页与断线约束”自动换来源，不重复询问。
 3. Chrome 通过挑战后必须继续复用同一浏览器会话。不得导出、打印或复制 `cf_clearance` 等浏览器 Cookie。页面公开直链无需验证 Cookie 时交给 `download_file.py`；仍依赖浏览器会话时使用 Chrome 原生下载并保存到关键词目录。
-4. 真实 Chrome 在 45 秒内仍受阻、无法控制或没有可用会话时，macOS 运行 `sh <agent-root>/tools/cloudflare_faker.sh start` 启动 Cloudflare-Faker；随后运行 `sh <agent-root>/tools/cloudflare_faker.sh check`。只有输出包含 `Chrome extension is connected and executable` 才算后备可用；仅有客户端数量或 `connected` 不足以证明扩展能执行任务。该辅助脚本当前仅支持 macOS，开发者扩展路径可用 `extension-path` 取得；其他系统按 Cloudflare-Faker 官方方式启动，但仍须限制到本机回环地址。缺少 JDK 24、扩展等前置条件时，不静默修改系统环境；明确报告缺少项，不能把来源写成“无结果”。
+4. 真实 Chrome 在 45 秒内仍受阻、无法控制或没有可用会话时，macOS 运行 `sh <agent-root>/tools/cloudflare_faker.sh start` 启动 Cloudflare-Faker；`start` 会在首次使用时安装登录自动启动、异常退出自动拉起的用户级 LaunchAgent。所有队列必须通过工具内置的全局锁串行访问唯一的 Faker 扩展，不得绕过客户端直接并发提交 `remote-html`。随后运行 `sh <agent-root>/tools/cloudflare_faker.sh check`。只有输出包含 `Chrome extension is connected and executable` 才算后备可用；仅有客户端数量或 `connected` 不足以证明扩展能执行任务。若执行检查返回 `Response timeout` 且日志显示扩展反复注册/断开，应记为 `faker_extension_execution_timeout`：服务最多重启一次，仍失败就切换下一个可信来源，不得误写成目标站无结果或继续循环重启。该辅助脚本当前仅支持 macOS，开发者扩展路径可用 `extension-path` 取得；其他系统按 Cloudflare-Faker 官方方式启动，但仍须限制到本机回环地址。缺少 JDK 24、扩展等前置条件时，不静默修改系统环境；明确报告缺少项，不能把来源写成“无结果”。
 5. Cloudflare-Faker 服务只允许监听本机回环地址；不得把控制台、WebSocket 或端口 `8080` 暴露给局域网或公网。只向它提交当前受阻的公开来源域名和精确页面。
 6. 每个受阻来源只执行一轮后备，真实 Chrome 与 Cloudflare-Faker 各最多 45 秒，合计等待上限 75 秒并计入当前关键词的 150 秒总时限。已有同域有效浏览器会话时直接复用，不重复启动服务或浏览器。
 7. 搜索页通过 Cloudflare-Faker 重试时使用 `extract_search_candidates.py ... --cloudflare-faker --faker-timeout 45`；精确详情/下载页重试时使用 `download_from_page.py ... --cloudflare-faker --faker-timeout 45`。只能使用工具内置的 `remote-html` 流程，不得调用受 Chrome MV3 CSP 禁止的 `remote-script`。Cloudflare-Faker 会为目标页使用独立标签，避免复用旧的 `Error` 标签。
@@ -321,30 +347,30 @@ MI9 是 `sources.json.publicDownloaderFallbacks` 中的公开包名生成器，�
 默认执行 `sources.json` 的 `searchPolicy.mode=fast`：
 
 1. 开始处理关键词时记录起始时间。普通来源操作最多使用 20 秒；确认 Cloudflare 后改用单独的 75 秒合计后备预算。50 MiB 及以上且已验证包名、版本、格式和 Content-Length 的安装包传输使用 60–900 秒独立预算；搜索阶段仍受 150 秒限制，但已经开始的正确文件传输允许完成。
-2. 官方身份查询应在一次批量搜索中完成；确认包名后，所有独立镜像查询也应在一次批量搜索中完成。
+2. 官方身份查询应在一次批量搜索中完成；确认包名后，把最高优先级、彼此独立的站内来源包名查询放在一次批量调用中。出现精确候选就按配置顺序立即处理，只有候选失败或准备记无结果时才扩展到关键词查询和其余来源。
 3. 来源优先级只用于选择候选。不得为了保持数组顺序而逐站等待相同类型的搜索请求。
 4. 相同查询批次不得重复提交。已有搜索结果应直接复用；普通网络操作必须设置不超过 20 秒的超时。真实 Chrome 和 Cloudflare-Faker 分别执行本节明确的 45 秒上限，任何操作都不得无上限等待。
-5. 多关键词任务按阶段批量执行：先批量确认身份，再批量搜索镜像，再使用“批量队列与断点续跑硬约束”的轮转队列逐个解析候选和下载。除非用户明确要求看到逐项结果，否则不得把完整工作流按关键词串行执行，也不得连续多轮只处理同一个失败项。
+5. 多关键词任务先批量确认身份，再为各项执行最高优先级包名搜索，并使用“批量队列与断点续跑硬约束”的轮转队列逐个验证和下载。一个关键词成功后不补查剩余来源；失败项才逐步扩大搜索。不得连续多轮只处理同一个失败项。
 6. 多关键词搜索与候选验证每轮总时限不得超过 `本轮关键词数量 × 150 秒`；已验证文件的 60–900 秒实际传输预算单独计算。每完成一次有效尝试都要推进轮转队列；每完成一个关键词都要检查该关键词及整批耗时，不能把保存图标和最终汇总放到无上限的尾部阶段。
 7. 找到版本明确、包名匹配且可下载的最新稳定安装包后立即停止，不再查备用来源。若较高版本页面没有安装包，应继续下一个可信来源。
 8. 只找到旧版本时，不继续长时间追踪不可取得的当前版本；下载已验证候选中版本最高的可信旧版，并在回复中注明实际版本。只有旧版也无法自动下载时才创建 `download-note.txt`。
 9. 运行到 120 秒仍没有已验证的可下载文件直链时，结束当前搜索轮次并保存进度检查点；已经取得正确直链并开始的大文件传输按独立预算继续。不得把该检查点作为最终答复，下一轮必须改查其他格式、可信旧版本、同名包或未完成的后备路径。
 10. 单轮搜索与候选验证以 150 秒为上限；Cloudflare 后备的合计 75 秒上限包含在单轮内。单轮到时只结束本轮，不结束未取得安装包的关键词。已验证并开始的 50 MiB 以上文件传输最多延长到工具计算的 900 秒上限。
 11. Pillow 等固定依赖应在开始整批关键词前检查并安装一次，不得在单个关键词计时过程中重复准备环境。
-12. 多关键词任务的完成标准是用户列表中的每个关键词都已保存并验证安装包，或付费应用已按规则跳过。`download-note.txt` 只表示仍在处理，不能使关键词达到终态。只完成前几项时只能发送带有未完成队列和下一动作的进度说明，不得输出整批最终答复、把任务标记为受阻，或把剩余项目留给用户再次提醒。
+12. 多关键词任务的完成标准是用户列表中的每个关键词都已保存并验证安装包、付费应用已按规则跳过，或已完成一次完整有效搜索后无结果跳过。`download-note.txt` 只表示仍在处理，不能使关键词达到终态。只完成前几项时只能发送带有未完成队列和下一动作的进度说明，不得输出整批最终答复、把任务标记为受阻，或把剩余项目留给用户再次提醒。
 13. 用户要求“按顺序”只约束候选处理和最终交付顺序，不改变第 5 条的阶段化批量执行。不得因此把整套身份查询、来源搜索、下载流程逐项串行运行后每两项就结束。
 
 ## 快速工作流程
 
 1. 开始计时；用一次批量查询确认应用名称、开发者、包名、开发者官网和 Google Play 页面。发现同品牌地区版或平台版时，先按“地区与平台变体硬约束”完成内部候选审计，再锁定最终包名。
    官方页确认应用付费时，立即按“付费应用直接跳过”结束该关键词，不生成来源计划。
-2. 确认包名后，先用 `tools/build_source_searches.py` 生成计划；计划中的 `search_url` 必须用 `tools/extract_search_candidates.py` 解析，`external_query` 才交给网页搜索工具。按 `sources.json` 的优先级选择结果；最高优先级出现 `candidate_found` 后立即验证该精确页。结论前确认每个启用来源至少达到 `已查询` 状态。
+2. 确认包名后，先用 `tools/build_source_searches.py` 生成计划；计划中的 `search_url` 必须用 `tools/extract_search_candidates.py` 解析，`external_query` 才交给网页搜索工具。最高优先级且彼此独立的站内来源包名查询可在同一批并发执行，再按 `sources.json` 顺序选择；出现 `candidate_found` 后立即验证精确页，成功后停止。只有准备记无结果时才确认每个启用来源的关键词与包名查询都已完成。
 3. 优先选择与用户设备兼容且通过 split 完整性检查的单体 APK；ZIP 校验通过只说明文件未损坏，不能证明它可独立安装。APK 含 split 描述、明确加载原生游戏引擎但没有 ABI `.so` 时，必须拒绝该 base APK，并选择同版本 XAPK、APKM 或 APKS。完整拆分包至少要有 base APK、与其清单一致的配置 APK；原生引擎应用还必须包含至少一个实际含 `.so` 的 ABI split，并在回复中注明格式。
    当前关键词目录已有安装包时，不得凭文件存在、大小或旧回复跳过下载；先运行 `tools/validate_package.py`。现有包输出 `invalid_package` 时按未完成继续处理，保留到替代包验证成功后再移入废纸篓。
    官方包名来源耗尽时，按“同名不同包名回退”继续，不得直接生成下载说明；回退下载必须使用候选的实际包名并在文件名和回复中显式标注差异。
 4. 取得精确下载页后必须使用 `tools/download_from_page.py` 在同一命令中解析并下载，不要等整批搜索结束，也不要用自写 curl/正则替代。用户未指定版本时使用默认 `prefer-latest`，比较页面实际版本并选择可下载候选中最高的稳定版；用户指定版本时使用 `--version-policy exact`。保存一个通过 ZIP 与 split 完整性检查的最佳候选安装包后立即停止搜索，不要为了凑数量重复下载多个相同版本。
 5. 获取官方或来源明确的最大尺寸图标，优先直接下载 WEBP。
-6. 把安装包、清晰 WEBP 图标和只含开发者名称的 `developer.txt` 保存到本次关键词目录，随后运行 `tools/validate_delivery.py <keyword-directory>`。未输出 `classification=valid_delivery` 时必须立即补齐缺项，不能汇报完成。
+6. 把安装包、清晰 WEBP 图标、只含开发者名称的 `developer.txt` 和只含实际来源 URL 的 `source.txt` 保存到本次关键词目录。普通任务运行 `tools/validate_delivery.py <keyword-directory>`；局域网队列任务直接运行 `keyword_queue.py complete ...` 完成本次唯一终检。验证失败时必须立即补齐缺项，不能汇报完成。
 7. 创建 UTF-8 编码的 `developer.txt`，内容仅为开发者名称和结尾换行，不添加标签、JSON 或其他字段。
 8. 一轮自动下载路径暂时受阻时，按“下载进度说明”规则创建 `download-note.txt` 并继续轮转，不询问用户或要求人工操作。
 9. 用简短中文回复开发者、版本、包名、格式、官网、Google Play、下载来源和本地文件路径；严格遵守“快速模式时限”。
@@ -409,6 +435,7 @@ Find-apk/
         <apk-stem>_<version>.<apk|xapk|apkm|apks>
         <apk-stem>_<version>.webp
         developer.txt
+        source.txt
         download-note.txt  # 仅在自动下载待续跑时存在
 ```
 
@@ -420,7 +447,7 @@ Find-apk/
 - 折叠连续连字符，英文使用小写。
 - 避开 `CON`、`PRN`、`AUX`、`NUL`、`COM1`、`LPT1` 等 Windows 保留名。
 
-例如关键词 `DTA Connect` 保存到 `downloads/YYYY-MM-DD/dta-connect/`。安装包、图标和 `developer.txt` 直接放在关键词目录中。仅下载受阻时增加 `download-note.txt`；不创建 `source_package/`、`report.md` 或 `checksums.sha256`。
+例如关键词 `DTA Connect` 保存到 `downloads/YYYY-MM-DD/dta-connect/`。安装包、图标、`developer.txt` 和 `source.txt` 直接放在关键词目录中。`source.txt` 每行只放一个实际来源 URL。仅下载受阻时增加 `download-note.txt`；不创建 `source_package/`、`report.md` 或 `checksums.sha256`。
 
 `downloads/` 是纯本地目录，必须由 `.gitignore` 排除。不得强制加入 Git。持久化内容和回复中的本地路径优先使用仓库相对路径与正斜杠，避免写入机器专属盘符或用户主目录。
 
@@ -439,8 +466,8 @@ Find-apk/
 - 下载说明：download-note.txt（仅在自动下载待续跑时）
 ```
 
-只在确有必要时补充一句安装格式提示。不要输出长篇搜索过程、取证结论或安全分析。
+无结果跳过项不套用“已找到”模板，只简短写“已完成一次完整有效搜索，无结果已跳过”和最终原因。只在确有必要时补充一句安装格式提示。不要输出长篇搜索过程、取证结论或安全分析。
 
 ## 完成标准
 
-确认开发者和目标应用相符，保存 WEBP 图标和 `developer.txt`，并在对话中给出官网、Google Play 与下载来源。只有保存并验证一个安装包，或按官方付费规则跳过，才算完成。自动下载暂时失败时可保存 `download-note.txt` 记录待续跑入口和阻塞原因，但任务保持未完成并继续处理。
+确认开发者和目标应用相符，保存 WEBP 图标和 `developer.txt`，并在对话中给出官网、Google Play 与下载来源。只有保存并验证一个安装包、按官方付费规则跳过，或一次完整有效搜索仍无结果后由队列标记 `not_found_skipped`，才算完成。自动下载暂时失败时可保存 `download-note.txt` 记录待续跑入口和阻塞原因，但任务保持未完成并只继续尚未执行的路径。

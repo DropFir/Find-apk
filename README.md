@@ -18,9 +18,9 @@
 
 通用关键词不会默认选 Android TV。发现同一品牌存在手机、TV 或地区包时，Agent 会先核对标题、开发者、包名、平台和地区；首个包名失效时，还会执行不含既定包名的同名变体审计。`404/410` 等失败只绑定到具体来源、包名和 URL，不能扩展成整个应用或整个来源已删除。用户给出的精确 URL 始终覆盖此前自动选择。
 
-多关键词任务只有在每个关键词都取得安装包，或确认付费后跳过才算完成。下载说明只是进度检查点。中途汇总只能作为进度，不能把剩余关键词留到用户再次提醒；“按顺序”只影响处理和输出顺序，身份与来源搜索仍按批次执行。
+多关键词任务只有在每个关键词都取得安装包、确认付费后跳过，或完成 2 轮不同的有效搜索后无结果跳过才算完成。下载说明只是进度检查点。中途汇总只能作为进度，不能把剩余关键词留到用户再次提醒；“按顺序”只影响处理和输出顺序，身份与来源搜索仍按批次执行。
 
-用户要求下载时，单个关键词只有“安装包保存并验证成功”或“官方确认付费后跳过”才算完成。无候选、网络超时、Cloudflare、浏览器限制和 `download-note.txt` 都只是处理中状态；Agent 会继续换格式、可信旧版本、同名不同包名候选及后备来源。单轮搜索时间到只结束该轮，不会发送失败终稿或等待用户再次提醒。多关键词任务会在批次末尾重新处理未完成队列。
+用户要求下载时，单个关键词只有“安装包保存并验证成功”“官方确认付费后跳过”或“2 轮有效搜索无结果后跳过”才算完成。一次无候选、网络超时、Cloudflare、浏览器限制和 `download-note.txt` 都只是处理中状态；Agent 会继续换格式、可信旧版本、同名不同包名候选及后备来源。相同 URL 的重复失败和工具错误不累计搜索轮次；第 2 轮有效搜索仍无结果时自动跳过并继续下一项，不再反复卡住整批。
 
 大批量任务采用固定轮转队列：先批量确认身份和来源候选，下载阶段按用户原始顺序让每个未完成关键词各获得一次新的有效尝试；单项仍失败时移到轮末，不能连续多轮重复同一 URL。恢复任务时会重新验证已有安装包，并依据原始列表重建未完成队列；空目录、下载说明、旧失败回复或临时 `blocked` 状态都不会被当作完成。单轮边界只会留下包含未完成顺序和下一动作的进度检查点，由后续继续机制自动续跑。
 
@@ -54,6 +54,24 @@ python3 -m venv .venv
 ```
 
 Windows 的解释器路径为 `.venv/Scripts/python.exe`。
+
+## 局域网搜索与关键词队列
+
+macOS 双击仓库根目录的 `start-lan-share.command`，即可安装并启动用户级后台常驻
+服务，在同一局域网中搜索、下载已经完成验证的安装包。服务会在登录后自动启动，
+异常退出时自动重启，无需保持终端窗口打开。网页也可以一次提交多个待查关键词，并由
+任务 `019f7e42-11a4-7d10-bb58-2a4086a80f28`；Agent 每次最多原子领取 10 个，
+不会把重复待处理关键词加入两次，也不会并发启动两个相同批次。
+
+关键词队列和运行状态保存在本地 `.find-apk-share/`，该目录不会提交到 Git。
+只有 `validate_delivery.py` 返回 `valid_delivery`、官方确认付费跳过，或 2 轮不同
+有效搜索均无结果后，队列项才会进入终态。详细使用方式见 `LAN-SHARE.md`。
+
+同一任务线程再次领取时，会优先恢复自己仍处于 `processing` 的原批次，并保持
+原顺序和尝试次数，不会在未完成时混入新关键词。自动化心跳、回复或上下文边界
+不应把任务释放为 `retry`；只有真实进程错误、系统安全限制或外部中断才使用
+`retry`。每完成一轮新的有效搜索但仍无候选时使用 `keyword_queue.py miss` 记录；
+第 2 次会自动显示为“无结果已跳过”并释放后续队列。
 
 ## 下载公开文件直链
 
@@ -101,6 +119,11 @@ APKCombo 只返回“Downloading / Sorry, something went wrong”动态占位页
 Chrome 中打开同一精确页并点击唯一匹配版本，不应要求用户复制临时链接。
 同样，Uptodown 的精确公开页对非浏览器客户端返回 `404` 或不下发动态
 按钮时，也会返回 `browser_required`，由 Agent 在 Chrome 中自动完成。
+Uptodown 只能从 `All variants` 选择目标 APK/XAPK，不能下载“with Uptodown
+App Store”；Softonic 详情页会自动进入 `/android/download`，只接受目标应用自己的
+下载入口，不接受 Softonic Helper。AndroidAPKs 的公开 `.apk/.xapk/.apkm/.apks`
+直链可直接解析。最终文件还会核对 APK 或 base APK Manifest 中的包名，因此即使网站
+助手本身是有效 APK，也不会被保存成目标应用。
 APKPure 精确详情页只渲染“Download APK/XAPK”中间入口时，一体化工具会自动进入
 `/download` 页并提取 `d.apkpure.*` 公开文件链接；若 `/download` 已失效，还会验证并使用
 APKPure 标准 CDN 入口。该确定性转换和 CDN 后备都不再依赖 Agent 或 Chrome。
@@ -116,9 +139,11 @@ HTTP/2 或大文件超时的 APK CDN，不会降级 HTTPS。50 MiB 及以上的�
 
 结果为 `classification=download_link`、`pipeline_result=download_failed` 时，表示链接存在但 Python/curl 下载失败。此时必须改用真实 Chrome 在同一页面点击已确认的唯一版本链接，并用浏览器原生下载一次；不能报告成“无直链”。
 
-下载工具以临时文件下载并原子保存，只重试一次；第一次 Python TLS 连接失败时，第二次自动使用系统 `curl`。它会拒绝 HTML 验证页和不是 ZIP 格式的伪 APK。图标转换脚本保持原尺寸并生成无损 WEBP；来源已经是 WEBP 时直接保存。不要求安装 Android SDK、ADB 或逆向工具。
+下载工具以临时文件下载并原子保存，只重试一次；存在可续传分片时使用系统 `curl` 续传，没有分片的瞬时 TLS 失败则继续使用 Python 下载通道重试，避免切换网络栈后反而握手失败。它会拒绝 HTML 验证页和不是 ZIP 格式的伪 APK。图标转换脚本保持原尺寸并生成无损 WEBP；来源已经是 WEBP 时直接保存。不要求安装 Android SDK、ADB 或逆向工具。
 
-ZIP 校验通过只代表文件没有损坏，不代表它是可独立安装的单体 APK。`download_file.py` 会读取二进制 `AndroidManifest.xml`：APK 声明 `requiredSplitTypes` 或 `com.android.vending.splits.required=true` 时，会直接判定它是缺少必要配置分包的 App Bundle base APK，并拒绝保存；旧的 `splits*.xml`、原生引擎标记与缺少 `.so` 的高置信度检查仍然保留。完整 XAPK/APKM/APKS 除了包含 base APK，还必须包含 Manifest 指定的 ABI、屏幕密度等必要分包；原生应用的 ABI split 还必须实际带有 `.so`。
+ZIP 校验通过只代表文件没有损坏，不代表它是可独立安装的单体 APK。`download_file.py` 会读取二进制 `AndroidManifest.xml`：APK 声明 `requiredSplitTypes` 或 `com.android.vending.splits.required=true` 时，会直接判定它是缺少必要配置分包的 App Bundle base APK，并拒绝保存；旧的 `splits*.xml`、原生引擎标记与缺少 `.so` 的高置信度检查仍然保留。完整 XAPK/APKM/APKS 除了包含 base APK，还必须包含 Manifest 指定的 ABI、屏幕密度等必要分包；普通手机交付的必需 ABI 分包至少要包含 `arm64-v8a`、`armeabi-v7a` 或 `armeabi`，只有 `x86/x86_64` 的包会被拒绝。原生应用的 ABI split 还必须实际带有 `.so`。
+
+普通关键词还会默认拒绝 Manifest 中 `android.software.leanback required=true` 的 Android TV 专用构建；同包名、同标题或 Google Play 同时列出 Phone/TV 都不能覆盖此检查。只有用户明确要求 TV/Android TV 时，下载和复检命令才可显式使用 `--allow-tv`。`leanback required=false` 仅表示兼容电视，仍可作为手机/平板候选。
 
 任务重启或目录内已有旧安装包时，Agent 必须先运行 `tools/validate_package.py <local-package>`，不能仅凭文件存在或体积判断已经完成。该工具会复检 APK Manifest 的强制 split 声明，并对 XAPK/APKM/APKS 执行完整外层 ZIP/CRC、内含 APK、Manifest 指定的 ABI/屏幕密度分包以及可识别原生应用的 ABI split 检查；`invalid_package` 会被当作未完成候选。
 
@@ -150,7 +175,9 @@ ZIP 校验通过只代表文件没有损坏，不代表它是可独立安装的�
 
 每次导航、点击、搜索提交或 MI9 `Generate` 后立即检查新标签。只有当前关键词/包名、当前来源计划域名、Google Play/开发者官网和下载工具允许的文件 CDN 页面可以保留；任何广告、购物、博彩、通知订阅、安装器推广、无关搜索结果或其他非关键词标签都立即关闭，不读取正文、不点击。若无关页面占用当前工作标签，则直接关闭该工作标签并用一个干净标签重新打开原目标，不能在广告页返回、刷新或继续交互。
 
-`sources.json.browserSessionPolicy.blockedDomains` 保存永久浏览器域名黑名单。`playafterdark.com`、它的广告跳转域名 `iccku.com` 及其子域已列入黑名单；MI9 等页面弹出这些域名时立即关闭，不读取、不点击、不再次访问，也不因关闭广告而重复提交同一次生成请求。
+`sources.json.browserSessionPolicy.blockedDomains` 保存永久浏览器域名黑名单。`playafterdark.com`、它的广告跳转域名 `iccku.com`、联盟落地页 `trip.com` 及其子域已列入黑名单；MI9 等页面弹出这些域名时立即关闭，不读取、不点击、不再次访问，也不因关闭广告而重复提交同一次生成请求。
+
+MI9 目前已暂停使用：它能把原工作标签直接劫持到广告联盟落地页，关闭子标签不足以隔离风险。`sources.json` 已禁用 MI9 下载器，并把 `mi9.com` 加入“禁止可见浏览器访问”列表；在有隔离且能拦截顶层广告导航的提取器之前，不得用用户 Chrome 或应用内浏览器打开 MI9。来源计划遇到它时直接继续下一个可信来源。
 
 页面用完立即关闭 Agent 自己创建的重复搜索页、错误页和空白页，任务结束关闭全部 Agent 任务标签。扩展断线只重连一次，重连期间不继续开标签；仍失败就切换 Cloudflare-Faker、MI9 公开组件或下一个来源。公开页面的常规后备不逐项询问用户，遇到需要人工验证码的页面直接换来源。
 
@@ -172,7 +199,7 @@ ZIP 校验通过只代表文件没有损坏，不代表它是可独立安装的�
 
 Chrome 通过后继续使用同一浏览器会话，不导出或打印 Cookie；仍依赖浏览器验证状态的文件使用 Chrome 原生下载。Cloudflare-Faker 固定版本为 `5b0f2a4759d7b84c36e37afbe5c2e6400706b6c6`，本地放在 `tools/vendor/Cloudflare-Faker/`，不提交到 Git。
 
-Cloudflare-Faker 需要 GUI、Chrome、JDK 24 和开发者模式扩展；缺少前置条件时明确提示，不静默安装系统组件。macOS 配置完成后使用 `sh tools/cloudflare_faker.sh start` 启动、`sh tools/cloudflare_faker.sh check` 检查本机服务与扩展的实际执行能力，只有显示 `Chrome extension is connected and executable` 才算可用；`sh tools/cloudflare_faker.sh stop` 用于停止。搜索页通过 `extract_search_candidates.py ... --cloudflare-faker --faker-timeout 45` 重试，精确页通过 `download_from_page.py ... --cloudflare-faker --faker-timeout 45` 重试。工具使用 `remote-html`，不会调用受 Chrome CSP 限制的 `remote-script`。扩展目录可由 `sh tools/cloudflare_faker.sh extension-path` 输出。该辅助脚本当前仅支持 macOS，并会强制服务只监听本机 `127.0.0.1:8080`；其他系统按上游说明手动启动并保持相同的回环限制。真实 Chrome 与 Cloudflare-Faker 各最多 45 秒、合计最多 75 秒，并计入每关键词 150 秒总时限。Chrome 标题为 `Error` 时仍要读取正文；明确的 404/410 页面按精确页失效处理，不能误报成网络超时或 Cloudflare。二者都失败后才能创建 `download-note.txt`。
+Cloudflare-Faker 需要 GUI、Chrome、JDK 24 和开发者模式扩展；缺少前置条件时明确提示，不静默安装系统组件。macOS 配置完成后使用 `sh tools/cloudflare_faker.sh install` 安装登录自动启动、异常退出自动拉起的用户级 LaunchAgent；日常可使用 `start`、`stop`、`restart`，彻底移除自启动使用 `uninstall`。服务固定只监听 `127.0.0.1:8080`。所有队列进程通过同一个跨进程锁串行访问唯一的 Chrome 扩展，等待锁的时间包含在 `--faker-timeout` 内，防止多队列同时导航造成扩展断线或响应串线。使用 `sh tools/cloudflare_faker.sh check` 检查本机服务与扩展的实际执行能力，只有显示 `Chrome extension is connected and executable` 才算可用；仅显示客户端数量或短暂 `connected` 不代表扩展可执行。若检查返回 `Response timeout` 且日志显示扩展反复注册/断开，说明扩展执行链路异常；服务最多重启一次，仍失败就换可信来源，不能把它当成目标站无结果。搜索页通过 `extract_search_candidates.py ... --cloudflare-faker --faker-timeout 45` 重试，精确页通过 `download_from_page.py ... --cloudflare-faker --faker-timeout 45` 重试。工具使用 `remote-html`，不会调用受 Chrome CSP 限制的 `remote-script`。扩展目录可由 `sh tools/cloudflare_faker.sh extension-path` 输出。该辅助脚本当前仅支持 macOS；其他系统按上游说明手动启动并保持相同的回环限制。真实 Chrome 与 Cloudflare-Faker 各最多 45 秒、合计最多 75 秒，并计入每关键词 150 秒总时限。Chrome 标题为 `Error` 时仍要读取正文；明确的 404/410 页面按精确页失效处理，不能误报成网络超时或 Cloudflare。二者都失败后才能创建 `download-note.txt`。
 
 ## 快速模式
 
@@ -236,10 +263,11 @@ downloads/YYYY-MM-DD/<keyword-folder>/
   <apk-stem>_<version>.<apk|xapk|apkm|apks>
   <apk-stem>_<version>.webp
   developer.txt
+  source.txt
   download-note.txt  # 仅下载受阻时存在
 ```
 
-例如关键词 `DTA Connect` 使用 `downloads/YYYY-MM-DD/dta-connect/`。`developer.txt` 使用 UTF-8 编码，内容只放开发者名称。`download-note.txt` 最多四行，只说明自动下载待续跑的原因与精确入口，不作为报告，也不要求用户接管。
+例如关键词 `DTA Connect` 使用 `downloads/YYYY-MM-DD/dta-connect/`。`developer.txt` 使用 UTF-8 编码，内容只放开发者名称；`source.txt` 每行只放一个实际来源 URL。`download-note.txt` 最多四行，只说明自动下载待续跑的原因与精确入口，不作为报告，也不要求用户接管。局域网下载会按需生成一个 ZIP，包含安装包、`icon.webp`、`developer.txt` 和 `source.txt`；历史交付没有来源记录时会在压缩包内明确标注。
 
 `downloads/` 不会进入 Git。目录名、文本换行和相对路径均兼容 Windows 与 macOS。
 
@@ -256,7 +284,7 @@ downloads/YYYY-MM-DD/<keyword-folder>/
 
 当前搜索方式：
 
-- APKPure：`https://apkpure.com/search?q={query}`。
+- APKPure：依次检查 `https://apkpure.com/search?q={query}` 和 `https://apkpure.net/search?q={query}`。
 - APKPac Canada：`https://ca.apkpac.com/search?q={query}`。
 - APKCombo：`https://apkcombo.com/search?q={query}`，站点可能重定向到 `/search/<slug>`。
 - APKMirror：没有稳定站内模板，使用 `site:apkmirror.com` 外部查询。

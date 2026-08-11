@@ -23,8 +23,10 @@
     "realChromeFallbackAfterDirectDownloadFailure": true,
     "browserRequiredSources": [
       "APKPure",
+      "APKPure.net",
       "APKCombo",
-      "Uptodown"
+      "Uptodown",
+      "Softonic"
     ],
     "downloadLinkFailureCannotBeReportedAsNoLink": true,
     "visibleCaptchaEvidenceRequired": true,
@@ -109,6 +111,7 @@
     "variantAuditQueries": [
       "site:play.google.com/store/apps/details \"{keyword}\"",
       "site:apkpure.com \"{keyword}\" APK",
+      "site:apkpure.net \"{keyword}\" APK",
       "site:apkmirror.com \"{keyword}\" APK"
     ],
     "ranking": [
@@ -318,10 +321,20 @@
     "neverClosePreexistingUserTabs": true,
     "blockedDomains": [
       "playafterdark.com",
-      "iccku.com"
+      "iccku.com",
+      "trip.com"
+    ],
+    "closeEveryChildTabFromDomains": [
+      "mi9.com"
     ],
     "closeBlockedDomainTabsImmediately": true,
+    "closeSourceChildTabsBeforeFollowingRedirects": true,
+    "closeNewTabsOpenedByMi9ByBaselineDiff": true,
+    "finalOpenTabsReconciliationRequired": true,
     "neverReadClickOrNavigateBlockedDomains": true,
+    "neverUseVisibleBrowserForDomains": [
+      "mi9.com"
+    ],
     "reconnectOnceAfterExtensionDisconnect": true,
     "openAdditionalTabsWhileDisconnected": false,
     "askForRoutinePublicPageFallback": false,
@@ -336,11 +349,19 @@
       "enabled": true
     },
     {
+      "name": "APKPure.net",
+      "baseUrl": "https://apkpure.net",
+      "searchUrlTemplate": "https://apkpure.net/search?q={query}",
+      "homepageRequired": false,
+      "enabled": true
+    },
+    {
       "name": "APKPac Canada",
       "baseUrl": "https://ca.apkpac.com",
       "searchUrlTemplate": "https://ca.apkpac.com/search?q={query}",
       "homepageRequired": false,
-      "enabled": true
+      "enabled": false,
+      "disabledReason": "User safety rule blocks this domain; keeping it enabled caused queue jobs to retry forever."
     },
     {
       "name": "APKCombo",
@@ -362,6 +383,27 @@
       "searchMode": "externalSiteQuery",
       "homepageRequired": false,
       "enabled": true
+    },
+    {
+      "name": "AndroidAPKs",
+      "baseUrl": "https://androidapks.com",
+      "searchMode": "externalSiteQuery",
+      "homepageRequired": false,
+      "enabled": true
+    },
+    {
+      "name": "Uptodown",
+      "baseUrl": "https://uptodown.com",
+      "searchMode": "externalSiteQuery",
+      "homepageRequired": false,
+      "enabled": true
+    },
+    {
+      "name": "Softonic",
+      "baseUrl": "https://softonic.com",
+      "searchMode": "externalSiteQuery",
+      "homepageRequired": false,
+      "enabled": true
     }
   ],
   "publicDownloaderFallbacks": [
@@ -380,7 +422,8 @@
       "assembleTool": "tools/download_split_archive.py",
       "clickBlockedBundleButton": false,
       "reuseSingleBrowserWorkTab": true,
-      "enabled": true
+      "enabled": false,
+      "disabledReason": "The site can replace its original work tab with an advertising redirect; do not expose it to the user's visible browser."
     }
   ],
   "fallbackSearch": {

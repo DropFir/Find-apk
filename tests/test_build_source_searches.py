@@ -80,6 +80,36 @@ class BuildSourceSearchesTests(unittest.TestCase):
             ],
         )
 
+    def test_apkpure_net_is_a_separate_configured_source(self) -> None:
+        config = {
+            "preferredSources": [
+                {
+                    "name": "APKPure",
+                    "baseUrl": "https://apkpure.com",
+                    "searchUrlTemplate": "https://apkpure.com/search?q={query}",
+                    "enabled": True,
+                },
+                {
+                    "name": "APKPure.net",
+                    "baseUrl": "https://apkpure.net",
+                    "searchUrlTemplate": "https://apkpure.net/search?q={query}",
+                    "enabled": True,
+                },
+            ]
+        }
+
+        searches = build_searches(config, "SkyView Lite", "com.t11.skyviewfree")
+
+        self.assertEqual(len(searches), 4)
+        self.assertEqual(
+            searches[2]["target"],
+            "https://apkpure.net/search?q=SkyView+Lite",
+        )
+        self.assertEqual(
+            searches[3]["fallback_target"],
+            'site:apkpure.net "com.t11.skyviewfree" APK',
+        )
+
     def test_does_not_append_public_downloader_without_confirmed_package(self) -> None:
         config = {
             "preferredSources": [],

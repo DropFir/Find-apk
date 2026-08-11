@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from http.client import HTTPException, IncompleteRead
+import io
 import os
 import re
 import shutil
@@ -19,7 +20,10 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from http_headers import BROWSER_NAVIGATION_HEADERS
+try:
+    from http_headers import BROWSER_NAVIGATION_HEADERS
+except ModuleNotFoundError:
+    from tools.http_headers import BROWSER_NAVIGATION_HEADERS
 
 BROWSER_HEADERS = {
     "User-Agent": BROWSER_NAVIGATION_HEADERS["User-Agent"],
@@ -50,6 +54,10 @@ ABI_SPLIT_PATTERN = re.compile(
     r"(?:^|[._-])(?:arm64[_-]?v8a|armeabi[_-]?v7a|armeabi|x86_64|x86)(?:[._-]|$)",
     re.IGNORECASE,
 )
+PHONE_ARM_ABI_SPLIT_PATTERN = re.compile(
+    r"(?:^|[._-])(?:arm64[_-]?v8a|armeabi[_-]?v7a|armeabi)(?:[._-]|$)",
+    re.IGNORECASE,
+)
 DENSITY_SPLIT_PATTERN = re.compile(
     r"(?:^|[._-])(?:ldpi|mdpi|tvdpi|hdpi|xhdpi|xxhdpi|xxxhdpi|[1-9][0-9]{2,3}dpi)"
     r"(?:[._-]|$)",
@@ -75,6 +83,24 @@ class ManifestSplitInfo:
     @property
     def requires_components(self) -> bool:
         return self.splits_required or bool(self.required_types)
+
+
+@dataclass(frozen=True)
+class ManifestPlatformInfo:
+    """Device-platform requirements declared by AndroidManifest.xml."""
+
+    leanback_required: bool = False
+
+    @property
+    def tv_only(self) -> bool:
+        return self.leanback_required
+
+
+def write_source_url(output: Path, source_url: str) -> None:
+    source = output.parent / "source.txt"
+    temporary = source.with_name(f".{source.name}.{os.getpid()}.tmp")
+    temporary.write_text(f"{source_url.strip()}\n", encoding="utf-8")
+    os.replace(temporary, source)
 
 
 def _read_length8(data: bytes, offset: int) -> tuple[int, int]:
@@ -276,6 +302,83 @@ def inspect_apk_manifest(archive: zipfile.ZipFile) -> ManifestSplitInfo:
     return inspect_manifest_split_info(manifest)
 
 
+def inspect_manifest_package_name(manifest: bytes) -> str | None:
+    """Read the application ID from a binary or text Android manifest."""
+    elements = _parse_binary_manifest_attributes(manifest)
+    if not elements and manifest.lstrip().startswith(b"<"):
+        import xml.etree.ElementTree as ElementTree
+
+        try:
+            root = ElementTree.fromstring(manifest)
+        except ElementTree.ParseError as error:
+            raise ValueError("invalid text AndroidManifest.xml") from error
+        elements = [
+            (
+                element.tag.rsplit("}", 1)[-1],
+                {
+                    name.rsplit("}", 1)[-1]: value
+                    for name, value in element.attrib.items()
+                },
+            )
+            for element in root.iter()
+        ]
+    for tag, attributes in elements:
+        package_name = attributes.get("package")
+        if tag == "manifest" and isinstance(package_name, str):
+            normalized = package_name.strip()
+            return normalized or None
+    return None
+
+
+def inspect_apk_package_name(archive: zipfile.ZipFile) -> str | None:
+    try:
+        manifest = archive.read("AndroidManifest.xml")
+    except KeyError as error:
+        raise ValueError("Android package is missing AndroidManifest.xml") from error
+    return inspect_manifest_package_name(manifest)
+
+
+def inspect_manifest_platform_info(manifest: bytes) -> ManifestPlatformInfo:
+    """Identify manifests that require Android TV instead of merely supporting it."""
+    elements = _parse_binary_manifest_attributes(manifest)
+    if not elements and manifest.lstrip().startswith(b"<"):
+        import xml.etree.ElementTree as ElementTree
+
+        try:
+            root = ElementTree.fromstring(manifest)
+        except ElementTree.ParseError as error:
+            raise ValueError("invalid text AndroidManifest.xml") from error
+        elements = []
+        for element in root.iter():
+            tag = element.tag.rsplit("}", 1)[-1]
+            attributes = {
+                name.rsplit("}", 1)[-1]: value
+                for name, value in element.attrib.items()
+            }
+            elements.append((tag, attributes))
+
+    leanback_required = False
+    for tag, attributes in elements:
+        if (
+            tag == "uses-feature"
+            and attributes.get("name") == "android.software.leanback"
+        ):
+            required = attributes.get("required", True)
+            leanback_required = required is not False and not (
+                isinstance(required, str) and required.casefold() == "false"
+            )
+            break
+    return ManifestPlatformInfo(leanback_required=leanback_required)
+
+
+def inspect_apk_platform(archive: zipfile.ZipFile) -> ManifestPlatformInfo:
+    try:
+        manifest = archive.read("AndroidManifest.xml")
+    except KeyError as error:
+        raise ValueError("Android package is missing AndroidManifest.xml") from error
+    return inspect_manifest_platform_info(manifest)
+
+
 def format_required_split_types(required_types: frozenset[str]) -> str:
     labels: list[str] = []
     if any("abi" in item.casefold() for item in required_types):
@@ -390,6 +493,15 @@ def inspect_nested_apk_manifest(
             return inspect_apk_manifest(nested_archive)
 
 
+def inspect_nested_apk_package_name(
+    outer_archive: zipfile.ZipFile, entry_name: str
+) -> str | None:
+    """Read the package identity from one nested APK manifest."""
+    with outer_archive.open(entry_name) as nested_file:
+        with zipfile.ZipFile(io.BytesIO(nested_file.read())) as nested_archive:
+            return inspect_apk_package_name(nested_archive)
+
+
 def select_base_apk_entry(apk_entries: list[str]) -> str | None:
     """Choose the most likely base APK while avoiding configuration splits."""
     for entry in apk_entries:
@@ -411,6 +523,24 @@ def select_base_apk_entry(apk_entries: list[str]) -> str | None:
     return None
 
 
+def select_base_apk_entry_from_archive(
+    outer_archive: zipfile.ZipFile, apk_entries: list[str]
+) -> str | None:
+    """Use nested manifests when filenames alone cannot distinguish asset packs."""
+    base_entry = select_base_apk_entry(apk_entries)
+    if base_entry is not None:
+        return base_entry
+
+    manifest_base_entries = [
+        entry
+        for entry in apk_entries
+        if inspect_nested_apk_manifest(outer_archive, entry).split_name is None
+    ]
+    if len(manifest_base_entries) == 1:
+        return manifest_base_entries[0]
+    return None
+
+
 def validate_split_package_completeness(path: Path) -> None:
     """Validate the outer archive and required native ABI split when identifiable."""
     try:
@@ -428,7 +558,9 @@ def validate_split_package_completeness(path: Path) -> None:
             if not apk_entries:
                 raise ValueError("Android split package contains no APK files")
 
-            base_entry = select_base_apk_entry(apk_entries)
+            base_entry = select_base_apk_entry_from_archive(
+                outer_archive, apk_entries
+            )
             if base_entry is None:
                 return
             base_manifest = inspect_nested_apk_manifest(outer_archive, base_entry)
@@ -460,6 +592,26 @@ def validate_split_package_completeness(path: Path) -> None:
                         "Android split package is missing its manifest-required "
                         f"{label} split"
                     )
+            requires_abi = any(
+                "abi" in required_type.casefold()
+                for required_type in base_manifest.required_types
+            )
+            if requires_abi and not any(
+                PHONE_ARM_ABI_SPLIT_PATTERN.search(label)
+                for label in component_labels
+            ):
+                available_abis = sorted(
+                    {
+                        match.group(0).strip("._-")
+                        for label in component_labels
+                        if (match := ABI_SPLIT_PATTERN.search(label)) is not None
+                    }
+                )
+                provided = ", ".join(available_abis) or "none"
+                raise ValueError(
+                    "Android split package is incompatible with standard ARM phones; "
+                    f"ABI splits provide only: {provided}"
+                )
             if base_manifest.splits_required and len(apk_entries) == 1:
                 raise ValueError(
                     "Android split package contains only a base APK but its "
@@ -491,6 +643,74 @@ def validate_split_package_completeness(path: Path) -> None:
         raise ValueError("download is not a valid ZIP-based Android package") from error
 
 
+def validate_mobile_platform(path: Path, suffix: str) -> None:
+    """Reject TV-only variants when the ordinary phone/tablet build is expected."""
+    try:
+        if suffix == ".apk":
+            with zipfile.ZipFile(path) as archive:
+                platform = inspect_apk_platform(archive)
+        else:
+            with zipfile.ZipFile(path) as outer_archive:
+                apk_entries = sorted(
+                    name
+                    for name in outer_archive.namelist()
+                    if name.casefold().endswith(".apk") and not name.endswith("/")
+                )
+                base_entry = select_base_apk_entry_from_archive(
+                    outer_archive, apk_entries
+                )
+                if base_entry is None:
+                    return
+                with outer_archive.open(base_entry) as nested_file:
+                    with zipfile.ZipFile(io.BytesIO(nested_file.read())) as nested_archive:
+                        platform = inspect_apk_platform(nested_archive)
+    except zipfile.BadZipFile as error:
+        raise ValueError("download is not a valid ZIP-based Android package") from error
+
+    if platform.tv_only:
+        raise ValueError(
+            "Android package requires Android TV/Leanback and is not a "
+            "phone/tablet build; use --allow-tv only for an explicit TV request"
+        )
+
+
+def validate_package_identity(
+    path: Path, suffix: str, expected_package: str
+) -> None:
+    """Reject site installers and unrelated packages returned by download pages."""
+    try:
+        if suffix == ".apk":
+            with zipfile.ZipFile(path) as archive:
+                actual_package = inspect_apk_package_name(archive)
+        else:
+            with zipfile.ZipFile(path) as outer_archive:
+                apk_entries = sorted(
+                    name
+                    for name in outer_archive.namelist()
+                    if name.casefold().endswith(".apk") and not name.endswith("/")
+                )
+                base_entry = select_base_apk_entry_from_archive(
+                    outer_archive, apk_entries
+                )
+                if base_entry is None:
+                    raise ValueError(
+                        "could not identify the base APK in the split package"
+                    )
+                actual_package = inspect_nested_apk_package_name(
+                    outer_archive, base_entry
+                )
+    except zipfile.BadZipFile as error:
+        raise ValueError("download is not a valid ZIP-based Android package") from error
+
+    if actual_package is None:
+        raise ValueError("could not identify Android package name")
+    if actual_package.casefold() != expected_package.strip().casefold():
+        raise ValueError(
+            "Android package identity mismatch: "
+            f"expected {expected_package}, found {actual_package}"
+        )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Download a public APK or image with one bounded retry."
@@ -516,6 +736,18 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Validate an APK as one component of a split archive. "
             "Only tools/download_split_archive.py should normally use this."
+        ),
+    )
+    parser.add_argument(
+        "--allow-tv",
+        action="store_true",
+        help="Allow an Android TV-only package for an explicit TV request.",
+    )
+    parser.add_argument(
+        "--expected-package",
+        help=(
+            "Require the APK/base APK manifest package to match this application ID. "
+            "This rejects unrelated site helper installers."
         ),
     )
     return parser.parse_args()
@@ -565,6 +797,8 @@ def validate_download(
     content_type: str,
     *,
     allow_split_component: bool = False,
+    allow_tv: bool = False,
+    expected_package: str | None = None,
 ) -> None:
     with path.open("rb") as downloaded:
         prefix = downloaded.read(INSPECT_SIZE)
@@ -585,6 +819,14 @@ def validate_download(
             validate_apk_split_completeness(path)
     elif suffix in {".xapk", ".apkm", ".apks"}:
         validate_split_package_completeness(path)
+    if (
+        suffix in PACKAGE_SUFFIXES
+        and not allow_split_component
+        and expected_package is not None
+    ):
+        validate_package_identity(path, suffix, expected_package)
+    if suffix in PACKAGE_SUFFIXES and not allow_split_component and not allow_tv:
+        validate_mobile_platform(path, suffix)
     if suffix == ".webp" and not (
         prefix.startswith(b"RIFF") and prefix[8:12] == b"WEBP"
     ):
@@ -778,7 +1020,7 @@ def main() -> int:
             for attempt in range(1, attempts + 1):
                 try:
                     resume_available = temporary.exists() and temporary.stat().st_size > 0
-                    if (attempt > 1 or resume_available) and shutil.which("curl") is not None:
+                    if resume_available and shutil.which("curl") is not None:
                         curl_timeout = effective_download_timeout(
                             args.timeout, output.suffix.lower()
                         )
@@ -797,9 +1039,16 @@ def main() -> int:
                         output.suffix.lower(),
                         content_type,
                         allow_split_component=args.split_component,
+                        allow_tv=args.allow_tv,
+                        expected_package=args.expected_package,
                     )
                     os.replace(temporary, output)
                     partial_metadata.unlink(missing_ok=True)
+                    if (
+                        output.suffix.casefold() in PACKAGE_SUFFIXES
+                        and not args.split_component
+                    ):
+                        write_source_url(output, args.url)
                     print(f"output={output.as_posix()}")
                     print(f"bytes={total}")
                     print(f"content_type={content_type}")
