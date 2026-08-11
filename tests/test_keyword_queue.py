@@ -339,6 +339,71 @@ class KeywordQueueTests(unittest.TestCase):
             self.assertEqual([job.id for job in claimed], [pending["id"]])
             self.assertEqual(queue.get(blocked["id"]).status, "retry")
 
+    def test_automatic_claim_reserves_one_blocked_slot_then_returns_to_normal_jobs(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            queue = self.make_queue(Path(temporary))
+            blocked = queue.add(["Cloudflare Candidate"])["created"][0]
+            queue.claim(limit=1, worker="setup-agent")
+            queue.record_candidate(
+                blocked["id"],
+                url="https://apkpure.com/cloudflare/com.example.blocked/download",
+            )
+            queue.clear_candidate(
+                blocked["id"],
+                reason="Cloudflare verification timeout after Chrome",
+            )
+            normal = queue.add(["Fresh Normal App"])["created"][0]
+
+            blocked_claim = queue.claim(
+                limit=10,
+                worker="automatic-blocked-agent",
+                automatic=True,
+            )
+            normal_claim = queue.claim(
+                limit=10,
+                worker="automatic-normal-agent",
+                automatic=True,
+            )
+
+            self.assertEqual([job.id for job in blocked_claim], [blocked["id"]])
+            self.assertEqual([job.id for job in normal_claim], [normal["id"]])
+
+    def test_automatic_claim_throttles_blocked_candidates_globally(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            queue = self.make_queue(Path(temporary))
+            jobs = queue.add(["Blocked One", "Blocked Two"])["created"]
+            queue.claim(limit=2, worker="setup-agent")
+            for job in jobs:
+                queue.record_candidate(
+                    job["id"],
+                    url=f"https://apkpure.com/app/com.example.blocked{job['id']}",
+                )
+                queue.clear_candidate(
+                    job["id"],
+                    reason="browser_required after Cloudflare timeout",
+                )
+
+            first = queue.claim(
+                limit=10,
+                worker="automatic-one",
+                automatic=True,
+            )
+            second = queue.claim(
+                limit=10,
+                worker="automatic-two",
+                automatic=True,
+            )
+
+            self.assertEqual(len(first), 1)
+            self.assertEqual(second, [])
+            remaining = queue.list_jobs(status="retry")
+            self.assertEqual(len(remaining), 1)
+
+            manual = queue.claim(limit=1, worker="manual-agent")
+            self.assertEqual([job.id for job in manual], [remaining[0].id])
+
     def test_lists_only_exact_candidates_blocked_by_browser_challenges(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             queue = self.make_queue(Path(temporary))

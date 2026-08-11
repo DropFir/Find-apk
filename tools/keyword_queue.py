@@ -94,6 +94,14 @@ def main() -> int:
     claim_parser = subparsers.add_parser("claim")
     claim_parser.add_argument("--limit", type=int, default=10)
     claim_parser.add_argument("--worker", required=True)
+    claim_parser.add_argument(
+        "--automatic",
+        action="store_true",
+        help=(
+            "Prioritize normal jobs and throttle exact candidates blocked by "
+            "Cloudflare or browser timeouts to one every six hours."
+        ),
+    )
 
     claim_id_parser = subparsers.add_parser("claim-id")
     claim_id_parser.add_argument("--id", type=int, required=True)
@@ -164,6 +172,7 @@ def main() -> int:
             jobs = queue.claim(
                 limit=arguments.limit,
                 worker=arguments.worker,
+                automatic=arguments.automatic,
             )
             emit(
                 {

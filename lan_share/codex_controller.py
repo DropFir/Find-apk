@@ -415,7 +415,7 @@ class CodexController:
             f"你是唯一的 worker：{worker_id}。\n"
             "严格遵守当前仓库 AGENTS.md 的 Find-APK 规则。现在只执行一个独立关键词任务："
             f"运行 tools/keyword_queue.py claim --limit 1 "
-            f'--worker "{worker_id}"，只处理这次领取返回的唯一关键词。\n'
+            f'--worker "{worker_id}" --automatic，只处理这次领取返回的唯一关键词。\n'
             "若没有领取到任务，直接结束本轮。不得修改局域网网页、服务代码或队列规则；"
             "不得重新领取，也不得启动子任务。完成或按规则标记后结束本轮。"
             "用户未指定安装包格式时，必须先找最新稳定版且可独立安装的 ARM APK；"

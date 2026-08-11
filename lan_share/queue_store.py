@@ -51,6 +51,8 @@ CLOUDFLARE_BLOCKED_MARKERS = (
     "timeout",
     "超时",
 )
+AUTOMATIC_BLOCKED_RETRY_SECONDS = 6 * 60 * 60
+AUTOMATIC_BLOCKED_RETRY_STATE_KEY = "automatic_blocked_retry_at"
 
 
 @dataclass(frozen=True)
@@ -191,6 +193,10 @@ class KeywordQueue:
                     WHERE status IN ('pending', 'processing', 'retry');
                 CREATE INDEX IF NOT EXISTS keyword_jobs_status_created
                     ON keyword_jobs(status, created_at, id);
+                CREATE TABLE IF NOT EXISTS keyword_queue_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
                 """
             )
             self._recover_interrupted_migration(connection)
@@ -815,7 +821,13 @@ class KeywordQueue:
                 """
             ).fetchone()[0]
 
-    def claim(self, *, limit: int = 10, worker: str) -> list[KeywordJob]:
+    def claim(
+        self,
+        *,
+        limit: int = 10,
+        worker: str,
+        automatic: bool = False,
+    ) -> list[KeywordJob]:
         bounded_limit = max(1, min(limit, 10))
         claimed_by = clean_keyword(worker)[:200] or "find-apk-agent"
         now = time.time()
@@ -872,23 +884,89 @@ class KeywordQueue:
                 ).fetchall()
                 return [self._job(row) for row in refreshed_rows]
 
-            rows = connection.execute(
-                """
-                SELECT id
-                FROM keyword_jobs
-                WHERE status IN ('pending', 'retry')
-                ORDER BY
-                    CASE
-                        WHEN status = 'retry' AND candidate_url IS NULL THEN 0
-                        WHEN status = 'pending' THEN 1
-                        ELSE 2
-                    END,
-                    created_at ASC,
-                    id ASC
-                LIMIT ?
-                """,
-                (bounded_limit,),
-            ).fetchall()
+            marker_sql = " OR ".join(
+                "lower(COALESCE(last_error, '')) LIKE ?"
+                for _ in CLOUDFLARE_BLOCKED_MARKERS
+            )
+            marker_parameters = [
+                f"%{marker}%" for marker in CLOUDFLARE_BLOCKED_MARKERS
+            ]
+            blocked_sql = f"""
+                status = 'retry'
+                AND length(trim(COALESCE(candidate_url, ''))) > 0
+                AND ({marker_sql})
+            """
+            if automatic:
+                state = connection.execute(
+                    """
+                    SELECT value
+                    FROM keyword_queue_state
+                    WHERE key = ?
+                    """,
+                    (AUTOMATIC_BLOCKED_RETRY_STATE_KEY,),
+                ).fetchone()
+                try:
+                    last_blocked_retry = float(state["value"]) if state else 0.0
+                except (TypeError, ValueError):
+                    last_blocked_retry = 0.0
+                rows = []
+                if now - last_blocked_retry >= AUTOMATIC_BLOCKED_RETRY_SECONDS:
+                    rows = connection.execute(
+                        f"""
+                        SELECT id
+                        FROM keyword_jobs
+                        WHERE {blocked_sql}
+                        ORDER BY updated_at ASC, id ASC
+                        LIMIT 1
+                        """,
+                        marker_parameters,
+                    ).fetchall()
+                    if rows:
+                        connection.execute(
+                            """
+                            INSERT INTO keyword_queue_state (key, value)
+                            VALUES (?, ?)
+                            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                            """,
+                            (AUTOMATIC_BLOCKED_RETRY_STATE_KEY, str(now)),
+                        )
+                if not rows:
+                    rows = connection.execute(
+                        f"""
+                        SELECT id
+                        FROM keyword_jobs
+                        WHERE status IN ('pending', 'retry')
+                          AND NOT ({blocked_sql})
+                        ORDER BY
+                            CASE
+                                WHEN status = 'retry' AND candidate_url IS NULL THEN 0
+                                WHEN status = 'pending' THEN 1
+                                ELSE 2
+                            END,
+                            created_at ASC,
+                            id ASC
+                        LIMIT ?
+                        """,
+                        (*marker_parameters, bounded_limit),
+                    ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT id
+                    FROM keyword_jobs
+                    WHERE status IN ('pending', 'retry')
+                    ORDER BY
+                        CASE
+                            WHEN status = 'retry' AND candidate_url IS NULL THEN 0
+                            WHEN status = 'pending' THEN 1
+                            ELSE 2
+                        END,
+                        created_at ASC,
+                        id ASC
+                    LIMIT ?
+                    """,
+                    (bounded_limit,),
+                ).fetchall()
             ids = [row["id"] for row in rows]
             if not ids:
                 return []

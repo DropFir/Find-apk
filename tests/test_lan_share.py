@@ -399,6 +399,15 @@ class DeliveryIndexTests(unittest.TestCase):
         self.assertEqual(restored.settings.model, "gpt-5.6-terra")
         self.assertEqual(restored.settings.batch_size, 5)
 
+    def test_codex_controller_uses_throttled_automatic_queue_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            controller = CodexController(root, root / "state" / "codex.json")
+
+            prompt = controller._worker_prompt("lan-codex-1")
+
+        self.assertIn("--worker \"lan-codex-1\" --automatic", prompt)
+
     def test_codex_controller_starts_followup_outside_reader_thread(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
