@@ -76,7 +76,7 @@ def write_plist(port: int) -> None:
         raise
 
 
-def wait_until_ready(timeout: float = 30) -> bool:
+def wait_until_ready(timeout: float = 30, *, newer_than: float = 0) -> bool:
     database = STATE_ROOT / "browser-downloads.sqlite3"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -84,7 +84,10 @@ def wait_until_ready(timeout: float = 30) -> bool:
             try:
                 from lan_share.browser_worker import BrowserDownloadStore
 
-                if BrowserDownloadStore(database).worker_available():
+                store = BrowserDownloadStore(database)
+                snapshot = store.snapshot(limit=1)
+                heartbeat = float(snapshot["worker"].get("heartbeat_at") or 0)
+                if store.worker_available() and heartbeat >= newer_than:
                     return True
             except (OSError, RuntimeError):
                 pass
@@ -99,13 +102,14 @@ def install(port: int) -> int:
     if is_loaded():
         launchctl("bootout", SERVICE_TARGET, check=False)
     write_plist(port)
+    started_at = time.time()
     launchctl("bootstrap", DOMAIN, str(PLIST_PATH))
     launchctl("enable", SERVICE_TARGET)
     # RunAtLoad starts the process after bootstrap.  A simultaneous kickstart can
     # return EX_TEMPFAIL (37) while launchd is already starting the job.
-    if not wait_until_ready(timeout=3):
+    if not wait_until_ready(timeout=3, newer_than=started_at):
         launchctl("kickstart", "-k", SERVICE_TARGET, check=False)
-    if not wait_until_ready():
+    if not wait_until_ready(newer_than=started_at):
         print("Browser worker did not become ready.", file=sys.stderr)
         return 1
     print("classification=browser_worker_running")
@@ -117,15 +121,16 @@ def install(port: int) -> int:
 def start(port: int) -> int:
     if not PLIST_PATH.is_file():
         return install(port)
+    started_at = time.time()
     loaded = is_loaded()
     if not loaded:
         launchctl("bootstrap", DOMAIN, str(PLIST_PATH))
-    elif wait_until_ready(timeout=1):
+    elif wait_until_ready(timeout=1, newer_than=started_at):
         print("classification=browser_worker_running")
         return 0
-    if not wait_until_ready(timeout=3):
+    if not wait_until_ready(timeout=3, newer_than=started_at):
         launchctl("kickstart", "-k", SERVICE_TARGET, check=False)
-    if not wait_until_ready():
+    if not wait_until_ready(newer_than=started_at):
         print("Browser worker did not become ready.", file=sys.stderr)
         return 1
     print("classification=browser_worker_running")
@@ -134,7 +139,10 @@ def start(port: int) -> int:
 
 def stop() -> int:
     if is_loaded():
-        launchctl("bootout", SERVICE_TARGET)
+        launchctl("bootout", SERVICE_TARGET, check=False)
+        deadline = time.monotonic() + 10
+        while is_loaded() and time.monotonic() < deadline:
+            time.sleep(0.1)
     print("classification=browser_worker_stopped")
     return 0
 

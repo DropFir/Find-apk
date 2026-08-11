@@ -13,6 +13,7 @@ __pycache__/
 /venv/
 /tools/vendor/
 /.find-apk-share/
+/lan_share/static/browser-worker-status.json
 
 # Operating-system metadata.
 .DS_Store

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import signal
@@ -24,6 +25,17 @@ STATE_ROOT = Path(
     os.environ.get("FIND_APK_SHARE_STATE", PROJECT_ROOT / ".find-apk-share")
 ).resolve(strict=False)
 CHROME_PORT = int(os.environ.get("FIND_APK_BROWSER_PORT", "9223"))
+STATUS_PATH = PROJECT_ROOT / "lan_share" / "static" / "browser-worker-status.json"
+
+
+def write_status_snapshot(store: BrowserDownloadStore) -> None:
+    STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = STATUS_PATH.with_name(f".{STATUS_PATH.name}.tmp")
+    temporary.write_text(
+        json.dumps(store.snapshot(limit=10), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    os.replace(temporary, STATUS_PATH)
 
 
 def main() -> int:
@@ -51,8 +63,10 @@ def main() -> int:
         while not stop.wait(1):
             if not worker.is_running:
                 raise RuntimeError("browser worker thread stopped unexpectedly")
+            write_status_snapshot(store)
     finally:
         worker.stop()
+        write_status_snapshot(store)
     return 0
 
 

@@ -987,7 +987,12 @@ function renderBrowserWorker(snapshot) {
 async function loadBrowserWorker() {
   if (!codexPanel.classList.contains("is-active")) return;
   try {
-    const response = await fetch("/api/browser-worker", { cache: "no-store" });
+    let response = await fetch("/api/browser-worker", { cache: "no-store" });
+    if (response.status === 404) {
+      response = await fetch("/static/browser-worker-status.json", {
+        cache: "no-store",
+      });
+    }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     renderBrowserWorker(await response.json());
   } catch (error) {
