@@ -429,6 +429,8 @@ class CodexController:
             "`browser_download_required`，同一文件入口只执行一次 Faker/Chrome 后备；"
             "后备仍无真实安装包就立即保留已确认身份并轮转到下一个可信来源，不得重复"
             "请求同一 APKPure 链接，也不得把它描述成未找到应用。可以使用 Chrome 做公开页面复核，但不依赖个人账号登录态，"
+            "精确候选页仍存在时，Cloudflare、人机验证、403、HTML 响应、Chrome/Faker 超时都不得解除候选锁或执行 miss；"
+            "必须保留 candidate_url 并标记 retry。clear-candidate 工具对这类原因会返回 candidate_deferred。"
             "完整来源链路只执行一遍，不得为了累计第二轮无结果而从头重跑。只有明确的"
             "网络超时、连接中断、TLS 或临时 5xx 才对当前请求最多执行两次总尝试；第二次"
             "仍失败就保留准确状态并转到链路中的下一来源。所有启用来源、候选和规定后备"

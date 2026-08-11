@@ -79,6 +79,26 @@ def clean_candidate_url(value: str) -> str:
     return candidate
 
 
+def candidate_rejection_is_terminal(reason: str) -> bool:
+    """Return True only for evidence that makes an exact page unusable."""
+    normalized = clean_keyword(reason).casefold()
+    terminal_markers = (
+        "404",
+        "410",
+        "package_mismatch",
+        "package mismatch",
+        "包名不匹配",
+        "no_download_link",
+        "no download link",
+        "不再提供",
+        "资源已删除",
+        "页面已删除",
+        "只提供安装器",
+        "签名链接无法刷新",
+    )
+    return any(marker in normalized for marker in terminal_markers)
+
+
 def keyword_search_filters(query: str) -> tuple[list[str], list[str]]:
     conditions: list[str] = []
     parameters: list[str] = []
@@ -765,7 +785,14 @@ class KeywordQueue:
                 SELECT id
                 FROM keyword_jobs
                 WHERE status IN ('pending', 'retry')
-                ORDER BY created_at ASC, id ASC
+                ORDER BY
+                    CASE
+                        WHEN status = 'retry' AND candidate_url IS NULL THEN 0
+                        WHEN status = 'pending' THEN 1
+                        ELSE 2
+                    END,
+                    created_at ASC,
+                    id ASC
                 LIMIT ?
                 """,
                 (bounded_limit,),
@@ -1089,6 +1116,31 @@ class KeywordQueue:
                 )
             if not row["candidate_url"]:
                 raise ValueError(f"job {job_id} has no recorded candidate")
+            if not candidate_rejection_is_terminal(clean_reason):
+                connection.execute(
+                    """
+                    UPDATE keyword_jobs
+                    SET status = 'retry',
+                        claimed_by = NULL,
+                        claimed_at = NULL,
+                        completed_at = NULL,
+                        last_error = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        "精确候选仍存在，当前仅因验证或临时下载失败等待重试："
+                        f"{clean_reason}",
+                        now,
+                        job_id,
+                    ),
+                )
+                updated = connection.execute(
+                    "SELECT * FROM keyword_jobs WHERE id = ?",
+                    (job_id,),
+                ).fetchone()
+                assert updated is not None
+                return self._job(updated)
             connection.execute(
                 """
                 UPDATE keyword_jobs

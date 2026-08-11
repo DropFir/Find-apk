@@ -301,6 +301,44 @@ class KeywordQueueTests(unittest.TestCase):
                     reason="download did not create a file",
                 )
 
+    def test_cloudflare_failure_defers_exact_candidate_instead_of_clearing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            queue = self.make_queue(Path(temporary))
+            job = queue.add(["Reel Rush"])["created"][0]
+            queue.claim(limit=1, worker="agent")
+            candidate = "https://apkpure.com/reel-rush/package/download"
+            queue.record_candidate(job["id"], url=candidate)
+
+            deferred = queue.clear_candidate(
+                job["id"],
+                reason="Cloudflare verification timeout after Chrome and Faker",
+            )
+
+            self.assertEqual(deferred.status, "retry")
+            self.assertEqual(deferred.candidate_url, candidate)
+            self.assertEqual(deferred.claimed_by, "")
+            self.assertIn("等待重试", deferred.last_error)
+
+    def test_pending_jobs_run_before_candidate_waiting_for_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            queue = self.make_queue(Path(temporary))
+            blocked = queue.add(["Cloudflare Candidate"])["created"][0]
+            queue.claim(limit=1, worker="agent")
+            queue.record_candidate(
+                blocked["id"],
+                url="https://apkpure.com/cloudflare/app/download",
+            )
+            queue.clear_candidate(
+                blocked["id"],
+                reason="d.apkpure returned HTML and browser verification timed out",
+            )
+            pending = queue.add(["Fresh Pending App"])["created"][0]
+
+            claimed = queue.claim(limit=1, worker="next-agent")
+
+            self.assertEqual([job.id for job in claimed], [pending["id"]])
+            self.assertEqual(queue.get(blocked["id"]).status, "retry")
+
     def test_reopen_completed_job_keeps_original_queue_position(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             queue = self.make_queue(Path(temporary))

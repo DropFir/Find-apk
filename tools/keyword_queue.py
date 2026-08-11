@@ -228,7 +228,12 @@ def main() -> int:
                 arguments.id,
                 reason=arguments.reason,
             )
-            emit({"classification": "candidate_cleared", "job": job.as_json()})
+            classification = (
+                "candidate_deferred"
+                if job.candidate_url and job.status == "retry"
+                else "candidate_cleared"
+            )
+            emit({"classification": classification, "job": job.as_json()})
             return 0
         if arguments.command == "reopen":
             job = queue.reopen(

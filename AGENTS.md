@@ -71,7 +71,8 @@
 1. 局域网服务发来的消息若明确写有“已领取”并逐行提供任务 ID 与关键词，直接按消息顺序处理这些关键词，不得再次运行 `claim`。其他队列批次才只运行一次 `<python> <agent-root>/tools/keyword_queue.py claim --limit 10 --worker "<worker-id>"`，按返回 JSON 中的顺序处理 `jobs`；同一 `worker-id` 上次留下的 `processing` 项会被优先原序返回且不增加尝试次数，必须从现有进度继续，不能另领新词或重做已验证阶段。领取结果为空时直接结束，不得猜测或复用旧关键词。
 2. 不直接读写 `.find-apk-share/queue.sqlite3`，不把网页关键词拼接成 shell 命令，也不在一个批次领取超过 10 项。领取后仍必须遵守本文件的身份确认、来源计划、轮转队列与交付验证规则。
    任一来源输出 `classification=candidate_found`，或已经取得包名匹配的稳定详情页/下载页后，必须立即运行 `<python> <agent-root>/tools/keyword_queue.py candidate --id <job-id> --url "<candidate-url>"`。候选锁只用于防止跳过尚未验证的真实候选；应记录稳定详情页或下载页，不把会过期的签名 CDN URL 作为候选入口。单次网络错误、403、Cloudflare 或下载中断不能直接解除候选锁。
-   候选完成一次自动解析，并在规则要求时完成真实 Chrome/Cloudflare 后备后，若确认 `404/410`、包名不匹配、`no_download_link`、只有验证码/挑战而允许的后备均失败、签名链接无法刷新，或页面完整可读但确实不再提供安装包，立即运行 `<python> <agent-root>/tools/keyword_queue.py clear-candidate --id <job-id> --reason "<候选失效的可验证原因>"`，继续剩余来源。已经得到上述可验证终态的同一候选不得在后续心跳原样重复；禁止清除仍有未尝试文件入口或可续传分片的候选。
+   候选完成一次自动解析，并在规则要求时完成真实 Chrome/Cloudflare 后备后，只有确认 `404/410`、包名不匹配、页面完整可读但返回 `no_download_link`或只提供其他应用的安装器、签名链接无法刷新，或页面确实不再提供安装包时，才运行 `<python> <agent-root>/tools/keyword_queue.py clear-candidate --id <job-id> --reason "<候选失效的可验证原因>"`，继续剩余来源。已经得到上述可验证终态的同一候选不得在后续心跳原样重复；禁止清除仍有未尝试文件入口或可续传分片的候选。
+   精确候选页仍存在时，Cloudflare/人机验证、`403`、返回 HTML、Chrome/Faker 后备超时或临时网络错误都不是候选失效证据。此时必须保留 `candidate_url`，运行 `<python> <agent-root>/tools/keyword_queue.py retry --id <job-id> --reason "精确候选仍存在，当前等待验证或临时下载恢复"` 并结束该关键词；禁止执行 `miss`。工具也会把这类 `clear-candidate` 自动转成 `candidate_deferred`，防止误标无结果。
    清除失效候选后，仍须继续尚未执行的来源、格式和可信旧版；完整链路全部完成仍无可下载候选就立即执行一次 `miss`。候选锁不得阻止单轮完整搜索正常结束。
 3. 安装包、图标、`developer.txt` 和 `source.txt` 就绪后，直接运行 `<python> <agent-root>/tools/keyword_queue.py complete --id <job-id> --delivery-directory <keyword-directory>`；它会调用 `validate_delivery.py` 做本次唯一的最终完整复检，验证失败时不得把队列项标为完成。刚由 `download_file.py` 或 `download_from_page.py` 成功保存的新文件也不再额外重复运行 `validate_package.py`；只有恢复任务、复用旧文件或下载工具未完成包校验时才单独运行。下载工具会自动把最终采用的来源写入 `source.txt`；若使用浏览器原生下载或手工移动公开文件，必须先把实际来源 URL 写入该文件。
 4. 当前官方页面确认付费并按规则跳过后，运行 `<python> <agent-root>/tools/keyword_queue.py paid --id <job-id>`。`download-note.txt`、`valid_package`、无候选或单轮超时均不得使用 `complete` 或 `paid`。
@@ -100,7 +101,7 @@
 4. 一个时间片结束后，仅继续仍未完成项的未执行路径，并从上次最后处理项的下一个关键词继续。优先顺序固定为：尚未验证的精确候选 → 尚未执行的启用来源 → 当前精确候选所需的浏览器或 Cloudflare 后备 → 按 APK → XAPK → APKM → APKS 进行格式回退 → 可信旧版本 → 有官方关联证据的不同包名回退。已经得到明确 `404/410` 或完成两次网络尝试的同一精确 URL 不得再次原样请求。
 5. 每次进度更新必须保留可供续跑的最小队列信息：本批总数、已完成数、未完成关键词原始顺序、刚完成的尝试以及下一个动作。该信息只写在对话中；需要跨轮保存单项阻塞点时更新该关键词最多四行的 `download-note.txt`，不得创建额外审计文件。
 6. 临近单轮、工具或上下文边界时，只能把当前回复标为“进度/待自动续跑”，不得把任务或整批标记为 `blocked`、`complete`、最终失败或“所有来源已耗尽”。产品的监控或后续继续机制唤醒后，先重新读取本文件，再按第 1 条重建队列并从记录的下一个动作继续。
-7. 只有当前执行记录同时具备官方身份三元组、`build_source_searches.py` 的完整计划、全部启用来源的关键词与包名查询结果、所有已找到精确候选的 `download_from_page.py` 结果，以及所需 Chrome/Cloudflare-Faker 后备结果时，才能把本次链路记为有效搜索无结果并执行一次 `keyword_queue.py miss`；队列会直接转换为完成终态。
+7. 只有当前执行记录同时具备官方身份三元组、`build_source_searches.py` 的完整计划、全部启用来源的关键词与包名查询结果、所有已找到精确候选的 `download_from_page.py` 结果，以及所需 Chrome/Cloudflare-Faker 后备结果，并且没有仅因 Cloudflare、验证、`403`、HTML 响应或超时而保留的精确候选时，才能把本次链路记为有效搜索无结果并执行一次 `keyword_queue.py miss`；队列会直接转换为完成终态。
 8. 重复的 `404`、Cloudflare、网络超时或外部搜索无结果，只绑定到对应的来源、包名、精确 URL 和本轮尝试。在第 7 条证据不完整时，绝对不得据此把单个关键词或整批标记为受阻。
 9. 关键词目录只在准备写入安装包、图标、`developer.txt` 或 `download-note.txt` 时创建。已经存在的空目录不代表开始、失败或完成；恢复任务时忽略它，不能据此跳过关键词。
 
@@ -114,7 +115,7 @@
 
 ### 单轮完整有效搜索无结果跳过
 
-1. “完整搜索 1 次”指核验官方身份与同名变体、执行全部启用来源计划、验证发现的新格式/版本/候选，并完成规则要求的真实 Chrome/Cloudflare 后备。候选经完整流程确认失效并清除属于有效结果；相同 URL、相同来源、相同版本和相同外部状态不得重复执行，也不得因旧候选锁反复延长任务。
+1. “完整搜索 1 次”指核验官方身份与同名变体、执行全部启用来源计划、验证发现的新格式/版本/候选，并完成规则要求的真实 Chrome/Cloudflare 后备。候选经完整流程以终态证据确认失效并清除属于有效结果；仅因 Cloudflare、验证、`403`、HTML 响应或超时受阻的精确候选不属于失效，不得计入无结果终态。相同 URL、相同来源、相同版本和相同外部状态不得重复执行。
 2. 只有所有提交的关键查询都取得可读结果，或明确确认目标只提供网页/iOS 等非 Android 版本时，才能执行一次 `keyword_queue.py miss`。工具传输错误、网络超时、批量请求被中断、Cloudflare 尚未执行后备和证据不完整都不算完整有效搜索；明确的可重试网络错误对当前请求最多执行两次总尝试。
 3. 完整搜索仍无结果时，第一次 `miss` 就把队列状态变为 `not_found_skipped`，停止继续搜索该关键词并立刻处理下一个关键词。不得为累计次数从官方身份或来源计划重新开始第二轮。
 4. `无结果已跳过` 不创建伪安装包、图标或 `developer.txt`，也不能用不相关同名应用充数。最终汇总应写明应用关键词、已完成一次完整有效搜索、最后原因；它不等于“应用永久不存在”。
